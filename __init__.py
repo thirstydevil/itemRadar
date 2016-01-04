@@ -1,7 +1,7 @@
 __author__ = 'David'
 
 import radarUI
-from PyQt4 import QtGui
+from PySide import QtGui
 import sys
 
 
