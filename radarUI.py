@@ -6,46 +6,7 @@ import logging as log
 log.basicConfig(level=log.DEBUG)
 import uuid
 
-
-class RadarQScene(QtGui.QGraphicsScene):
-    """
-    Reimplemented to access the public methods to do my own thing.  For now, just want mouse access to events
-    In the future I think I'll have to link this to a DB or in the 1st place add some serialisation to this,
-    more investigation needed
-    """
-    sceneDoubleClicked = Signal(QtCore.QPointF)
-
-    def __init__(self, *args, **kwds):
-        QtGui.QGraphicsScene.__init__(self, *args, **kwds)
-        self.dataModel = RadarItemModel()
-
-    def mouseDoubleClickEvent(self, QGraphicsSceneMouseEvent):
-        if QGraphicsSceneMouseEvent.button() == QtCore.Qt.LeftButton and \
-                QGraphicsSceneMouseEvent.modifiers() == QtCore.Qt.ControlModifier:
-            self.sceneDoubleClicked.emit(QGraphicsSceneMouseEvent.scenePos())
-
-        return super(RadarQScene, self).mouseDoubleClickEvent(QGraphicsSceneMouseEvent)
-
-    def addItem(self, item, **kwargs):
-        print self.selectedItems()
-        if getattr(item, "id", ""):
-            idx = QtGui.QStandardItem(item.id())
-            pos = QtGui.QStandardItem("{0},{1}".format(item.scenePos().x(), item.scenePos().y()))
-            name = QtGui.QStandardItem(item.id()[:5])
-            self.dataModel.appendRow([name, pos, idx])
-        super(RadarQScene, self).addItem(item)
-
-
-class RadarItemModel(QtGui.QStandardItemModel):
-    """
-    This scene is to filter items on the radar board.
-    """
-    def __init__(self, *args, **kwds):
-        QtGui.QStandardItemModel.__init__(self, *args, **kwds)
-
-
-
-class RadarItem(QtGui.QGraphicsItem):
+class RadarGraphicsItem(QtGui.QGraphicsItem):
     """
     TODO :  Want to be able to draw a a simple elipse but have a highlight state and selected state.
       also want to change to colour of the dot based on data saved on the dot.  Like user ratings,
@@ -53,7 +14,7 @@ class RadarItem(QtGui.QGraphicsItem):
     """
 
     def __init__(self, parent=None):
-        super(RadarItem, self).__init__(parent)
+        super(RadarGraphicsItem, self).__init__(parent)
         self.setFlags(QtGui.QGraphicsItem.ItemIsSelectable | QtGui.QGraphicsItem.ItemIsMovable)
         self.brush = QtGui.QBrush(QtGui.QColor.fromRgb(34, 255, 17))
         self.brushSelected = QtGui.QBrush(QtGui.QColor.fromRgb(102, 204, 255))
@@ -82,30 +43,81 @@ class RadarItem(QtGui.QGraphicsItem):
     def mousePressEvent(self, event, **kwargs):
         self._selected = True
         self.update()
-        return super(RadarItem, self).mousePressEvent(event)
+        return super(RadarGraphicsItem, self).mousePressEvent(event)
 
     def mouseReleaseEvent(self, event, **kwargs):
         self._selected = False
         self.update()
-        return super(RadarItem, self).mouseReleaseEvent(event)
+        return super(RadarGraphicsItem, self).mouseReleaseEvent(event)
 
-    # def mouseDoubleClickEvent(self, *args, **kwargs):
-    #     print "HERE", self.isSelected()
-    #     if self.isSelected():
-    #         self.setSelected(False)
-    #     else:
-    #         self.setSelected(True)
-    #     self.update()
-    #     return super(RadarItem, self).mouseDoubleClickEvent(*args, **kwargs)
+
+class RadarGraphicsScene(QtGui.QGraphicsScene):
+    """
+    Reimplemented to access the public methods to do my own thing.  For now, just want mouse access to events
+    In the future I think I'll have to link this to a DB or in the 1st place add some serialisation to this,
+    more investigation needed
+    """
+    sceneDoubleClicked = Signal(QtCore.QPointF)
+    radarItemClicked = Signal(RadarGraphicsItem)
+
+    def __init__(self, *args, **kwds):
+        QtGui.QGraphicsScene.__init__(self, *args, **kwds)
+        self.dataModel = RadarItemModel()
+
+    def mouseDoubleClickEvent(self, QGraphicsSceneMouseEvent):
+        if QGraphicsSceneMouseEvent.button() == QtCore.Qt.LeftButton and \
+                QGraphicsSceneMouseEvent.modifiers() == QtCore.Qt.ControlModifier:
+            self.sceneDoubleClicked.emit(QGraphicsSceneMouseEvent.scenePos())
+
+        return super(RadarGraphicsScene, self).mouseDoubleClickEvent(QGraphicsSceneMouseEvent)
+
+    def mousePressEvent(self, QGraphicsSceneMouseEvent, **kwargs):
+        item = self.itemAt(QGraphicsSceneMouseEvent.scenePos())
+        if getattr(item, "id", ""):
+            self.radarItemClicked.emit(item)
+        return super(RadarGraphicsScene, self).mousePressEvent(QGraphicsSceneMouseEvent)
+
+    def addItem(self, item, **kwargs):
+        print self.selectedItems()
+        if getattr(item, "id", ""):
+            idx = QtGui.QStandardItem(item.id())
+            pos = QtGui.QStandardItem("{0},{1}".format(item.scenePos().x(), item.scenePos().y()))
+            name = QtGui.QStandardItem(item.id()[:5])
+            self.dataModel.appendRow([name, pos, idx])
+        super(RadarGraphicsScene, self).addItem(item)
+
+
+
+class RadarItemModel(QtGui.QStandardItemModel):
+    """
+    This scene is to filter items on the radar board.
+    """
+    def __init__(self, *args, **kwds):
+        QtGui.QStandardItemModel.__init__(self, *args, **kwds)
 
 
 
 class MainDialog(QtGui.QDialog):
     def __init__(self, parent = None):
         super(MainDialog, self).__init__(parent)
-        self.setMinimumSize(1024, 1024)
-        self.mainLayout = QtGui.QHBoxLayout()
+
+        self.mainLayout = QtGui.QVBoxLayout()
+        self.mainPanelHLayout = QtGui.QHBoxLayout()
         self.setLayout(self.mainLayout)
+        self.mainLayout.addLayout(self.mainPanelHLayout)
+
+        self.createRadarBtn = QtGui.QPushButton("New")
+        self.deleteRadarBtn = QtGui.QPushButton("Delete")
+        btnLayout = QtGui.QHBoxLayout()
+        btnLayout.addWidget(self.createRadarBtn)
+        btnLayout.addWidget(self.deleteRadarBtn)
+        self.leftRadarVLayout =QtGui.QVBoxLayout()
+        self.leftRadarVLayout.addLayout(btnLayout)
+
+        self.mainPanelHLayout.addLayout(self.leftRadarVLayout)
+
+
+
 
         # mainBackground colour pallets
         self.backgroundBrush = QtGui.QBrush(QtGui.QColor.fromRgb(34, 17, 17))
@@ -121,24 +133,29 @@ class MainDialog(QtGui.QDialog):
         ## The reason I'm doing this is to easily calculate the distance from the center of the radar to organsie a list
         ## on items with the header data
 
-        self.scene = RadarQScene(-400,-300,800,600, parent=self)
+        self.scene = RadarGraphicsScene(-400,-300,800,600, parent=self)
         self.graphicsView = QtGui.QGraphicsView(self)
         self.graphicsView.setMaximumSize(805, 605)
         self.graphicsView.setScene(self.scene)
         self.graphicsView.setRenderHints(QtGui.QPainter.Antialiasing | QtGui.QPainter.SmoothPixmapTransform)
-        self.mainLayout.addWidget(self.graphicsView)
+        self.mainPanelHLayout.addWidget(self.graphicsView)
 
         self.itemListView = QtGui.QListView(self)
-        self.mainLayout.addWidget(self.itemListView)
+        self.itemListView.setMaximumHeight(605)
+        self.mainPanelHLayout.addWidget(self.itemListView)
         self.itemListView.setModel(self.scene.dataModel)
         #self.itemListView.selectionModel().selectionChanged.connect(self.setSelectedRadarItem)
 
         self.setupBackground()
 
         self.scene.sceneDoubleClicked.connect(self.addRadarItem)
+        self.scene.radarItemClicked.connect(self.updateRadarAttributes)
 
     def setSelectedRadarItem(self, *args):
         print args
+
+    def updateRadarAttributes(self, radarItem):
+        print "update radar attribute editor on : {0}".format(radarItem.id())
 
     def setupBackground(self):
         """
@@ -158,10 +175,8 @@ class MainDialog(QtGui.QDialog):
 
         # draw the radar circles
         for i in range(ringCount):
-            print i
             self.scene.addEllipse(0-(diameter/2), 0-(diameter/2), diameter, diameter, backgroundPenRings, backgroundBrush)
             diameter-=ringOffset
-            print diameter
 
         # overlay the grid
         for i in range(numberOfLines):
@@ -185,12 +200,8 @@ class MainDialog(QtGui.QDialog):
         :param scenePos: QScenePos
         :return: None
         """
-        blackBrush = QtGui.QBrush(QtCore.Qt.green)
-        redPen = QtGui.QPen(self.backgroundPenLinesBold)
-        # e = self.scene.addEllipse(scenePos.x()-5, scenePos.y()-5, self.radarItemDiameter,
-        #                           self.radarItemDiameter, redPen, blackBrush)
-        e = RadarItem()
+        e = RadarGraphicsItem()
         e.setPos(scenePos)
-        self.scene.addItem(e);
+        self.scene.addItem(e)
         log.debug("X{0}, Y{1}".format(scenePos.x()-5, scenePos.y()-5))
 
