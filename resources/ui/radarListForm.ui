@@ -36,7 +36,7 @@
     </layout>
    </item>
    <item>
-    <widget class="QListView" name="itemListView">
+    <widget class="QTableView" name="itemTableView">
      <property name="editTriggers">
       <set>QAbstractItemView::NoEditTriggers</set>
      </property>
@@ -45,12 +45,6 @@
      </property>
      <property name="alternatingRowColors">
       <bool>false</bool>
-     </property>
-     <property name="resizeMode">
-      <enum>QListView::Adjust</enum>
-     </property>
-     <property name="modelColumn">
-      <number>0</number>
      </property>
     </widget>
    </item>

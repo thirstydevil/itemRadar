@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 
-# Form implementation generated from reading ui file 'C:\Users\David\PycharmProjects\pythonTestBed\itemRadar\resources\ui\radarSelectSceneForm.ui'
+# Form implementation generated from reading ui file 'D:\__CODE\itemRadar\resources\ui\radarSelectSceneForm.ui'
 #
-# Created: Wed Jan 06 23:49:50 2016
-#      by: pyside-uic 0.2.15 running on PySide 1.2.4
+# Created: Thu Jan 07 19:17:07 2016
+#      by: pyside-uic 0.2.15 running on PySide 1.2.2
 #
 # WARNING! All changes made in this file will be lost!
 

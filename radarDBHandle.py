@@ -121,7 +121,14 @@ class RadarMongoDBScene(QtCore.QObject):
             newRecord = self.item_record_template.copy()
             newRecord["scene_id"] = self.sceneId()
             result = self.db.items.insert_one(newRecord)
-            return result.inserted_id
+            record = self.findItem(result.inserted_id)
+            return record
+        raise LookupError("No internal scene set on this object : RadarMongoDBScene")
+
+    def updateItemName(self, itemId, name):
+        itemRecord = self.findItem(itemId)
+        itemRecord["name"] = name
+        self.__updateItem__(itemId, itemRecord)
 
     def updatePosition(self, itemId, x, y):
         itemRecord = self.findItem(itemId)
@@ -216,6 +223,87 @@ class ScenesTableModel(QtCore.QAbstractTableModel):
             return row[column_key]
         else:
             return None
+
+
+class ItemsTableModel(QtCore.QAbstractTableModel):
+
+    columns = RadarMongoDBScene.scene_template.keys()
+
+    def __init__(self, radarMongoScene, parent=None):
+        super(ItemsTableModel, self).__init__(parent)
+        assert isinstance(radarMongoScene, RadarMongoDBScene)
+        self.radarMongoScene = radarMongoScene
+        self.datatable = []
+        self.columns = RadarMongoDBScene.item_record_template.keys()
+        self.sync()
+
+    def headerData(self, col, orientation, role):
+        if orientation == QtCore.Qt.Horizontal and role == QtCore.Qt.DisplayRole:
+            return self.columns[col]
+
+    def rowModelIndexFromId(self, idx):
+        row = self.rowFromId(idx)
+        data = {}
+        if row != -1:
+            for c in range(self.columnCount()):
+                data[self.columns[c]] = self.index(row, c)
+        return data
+
+    def rowFromId(self, idx):
+        foundItems = [row for row in self.datatable if str(row["_id"]) == str(idx)]
+        if foundItems:
+            row = self.datatable.index(foundItems[0])
+            return row
+        return -1
+
+    def rawDataFromRow(self, row):
+        return self.datatable[row]
+
+    def addNewRadarItem(self):
+        self.datatable.append(self.radarMongoScene.newItem())
+        self.layoutChanged.emit()
+        return self.datatable[-1]
+
+    def sync(self):
+        self.datatable = self.radarMongoScene.items()
+        self.layoutChanged.emit()
+
+    def columnCount(self, parent=QtCore.QModelIndex()):
+        return len(self.columns)
+
+    def rowCount(self, *args, **kwargs):
+        return len(self.datatable)
+
+    def data(self, index, role=QtCore.Qt.DisplayRole):
+        if not index.isValid():
+            return
+        if role == QtCore.Qt.DisplayRole:
+            row = self.datatable[index.row()]
+            column_key = self.columns[index.column()]
+            data = row[column_key]
+            if column_key == "created_on":
+                return data.strftime("%Y-%m-%d:%X")
+            return row[column_key]
+        else:
+            return None
+
+    def setData(self, index, value, role = QtCore.Qt.EditRole):
+        if role == QtCore.Qt.EditRole:
+
+            row = index.row()
+            column = index.column()
+            col_name = self.columns[column]
+            print row, column, col_name
+            idx = self.datatable[row]["_id"]
+            if col_name == "name":
+                self.radarMongoScene.updateItemName(idx, value)
+
+            self.datatable[row][col_name] = value
+
+            self.dataChanged.emit(index, index)
+            return True
+        return False
+
 
 if __name__ == "__main__":
     scene = RadarMongoDBScene.createNewScene()

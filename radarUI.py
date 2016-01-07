@@ -10,7 +10,7 @@ import logging as log
 import radarAttributeEditorForm
 import radarListForm
 import radarSelectSceneForm
-from radarDBHandle import RadarMongoDBScene, ScenesTableModel
+from radarDBHandle import RadarMongoDBScene, ScenesTableModel, ItemsTableModel
 
 log.basicConfig(level=log.DEBUG)
 
@@ -121,13 +121,14 @@ class RadarGraphicsScene(QtGui.QGraphicsScene):
     radarItemAdded = Signal(RadarGraphicsItem)
 
     def __init__(self,*args, **kwargs):
-        print kwargs
         super(RadarGraphicsScene, self).__init__(*args, **kwargs)
-        self.dataModel = RadarItemModel()
         self.dbScene = None
+        self.tableModel = None
+        self.sceneDoubleClicked.connect(self.addRadarItem)
 
-    def setDbScene(self, scene ):
+    def setRadarMogoDbScene(self, scene ):
         self.dbScene = scene
+        self.tableModel = ItemsTableModel(scene)
 
     def mouseDoubleClickEvent(self, QGraphicsSceneMouseEvent):
         if QGraphicsSceneMouseEvent.button() == QtCore.Qt.LeftButton and \
@@ -142,12 +143,15 @@ class RadarGraphicsScene(QtGui.QGraphicsScene):
             self.radarItemClicked.emit(item)
         return super(RadarGraphicsScene, self).mousePressEvent(QGraphicsSceneMouseEvent)
 
-    def addItem(self, item, **kwargs):
-        id = self.dbScene.newItem()
-        item.setId(id)
-        # self.dataModel.insertNewRowFromRadarItem(item)
-        super(RadarGraphicsScene, self).addItem(item)
-        self.radarItemAdded.emit(item)
+    def addRadarItem(self, pos, **kwargs):
+        record = self.tableModel.addNewRadarItem()
+        graphicsItem = RadarGraphicsItem()
+        graphicsItem.setId(record["_id"])
+        self.addItem(graphicsItem)
+        graphicsItem.setPos(pos)
+        self.dbScene.updatePosition(record["_id"], pos.x(), pos.y())
+        super(RadarGraphicsScene, self).addItem(graphicsItem)
+        self.radarItemAdded.emit(graphicsItem)
 
     def filterRadarItems(self):
         """
@@ -243,26 +247,6 @@ class RadarGraphicsView(QtGui.QGraphicsView):
 
         self.setupBackground()
         self.setupAnimatedRadar()
-
-        self.scene.sceneDoubleClicked.connect(self.addRadarItem)
-
-    def addRadarItem(self, scenePos):
-        """
-        Only reasonable way to add items is to double click on the screen to add the items.  This is hooked up to the
-        signal emitted by the sceneGraph when a user double clicks on the canvas
-        :param scenePos: QScenePos
-        :return: None
-        """
-        e = RadarGraphicsItem()
-        e.setPos(scenePos)
-        self.scene.addItem(e)
-        try:
-            e.radarItemHovered.connect(self.test)
-        except:pass
-        log.debug("X{0}, Y{1}".format(scenePos.x()-5, scenePos.y()-5))
-
-    def test(self):
-        self.parent().showToolTip("FOBAR")
 
     def showHideAnimatedRadar(self, state):
         item = getattr(self, "radarAnimItem", None)
@@ -381,31 +365,30 @@ class RadarFilterListPanel(QtGui.QDockWidget):
     def __init__(self, parent=None):
         super(RadarFilterListPanel, self).__init__(" Radar List", parent)
         self.setAllowedAreas(QtCore.Qt.LeftDockWidgetArea | QtCore.Qt.RightDockWidgetArea)
-
         containerWidget = QtGui.QWidget(self)
         self.form = radarListForm.Ui_Form()
         self.form.setupUi(containerWidget)
-        self.form.itemListView.setModelColumn(0)
         self.setWidget(containerWidget)
-        self.form.itemListView.clicked.connect(self.emitSelectionChange)
+        self.form.itemTableView.clicked.connect(self.emitSelectionChange)
         self.model = None
 
 
     def setModel(self, model):
         self.model = model
-        self.form.itemListView.setModel(model)
+        self.form.itemTableView.setModel(model)
 
 
     def updateSelectedFromRadarItem(self, radarItem):
-        assert isinstance(self.model, RadarItemModel)
+        log.debug("Update List From Selected Item in Scene")
         data = self.model.rowDataFromRadarItem(radarItem)
-        self.form.itemListView.selectionModel().select(data[0].index(), QtGui.QItemSelectionModel.ClearAndSelect)
-        self.form.itemListView.scrollTo(data[0].index())
+        rowIndexes = self.model.rowModelIndexFromId(radarItem.id())
+        self.form.itemTableView.selectionModel().select(rowIndexes[0].index(), QtGui.QItemSelectionModel.ClearAndSelect)
+        self.form.itemTableView.scrollTo(data[0].index())
 
     def emitSelectionChange(self):
-        modelIndex = self.form.itemListView.selectionModel().selectedIndexes()[0]
-        uuid = self.model.item(modelIndex.row(), 2).data(QtCore.Qt.DisplayRole)
-        self.radarSelectionChanged.emit(uuid)
+        modelIndex = self.form.itemTableView.selectionModel().selectedIndexes()[0]
+        idx = self.model.rawDataFromRow(modelIndex.row())["_id"]
+        self.radarSelectionChanged.emit(idx)
 
 
 class RadarItemAttributeEditor(QtGui.QDockWidget):
@@ -418,7 +401,8 @@ class RadarItemAttributeEditor(QtGui.QDockWidget):
         containerWidget = QtGui.QWidget(self)
         self.form.setupUi(containerWidget)
         self.setWidget(containerWidget)
-        self.rowData = []
+        self.record = {}
+        self.rowIndexes = {}
         self.connectSignals()
 
     def connectSignals(self):
@@ -432,39 +416,33 @@ class RadarItemAttributeEditor(QtGui.QDockWidget):
         self.clearData()
 
     def setRadarItem(self, radarItem):
-        role = QtCore.Qt.DisplayRole
-        rowDataCopy = [QtGui.QStandardItem(""),
-                       QtGui.QStandardItem(""),
-                       QtGui.QStandardItem(""),
-                       QtGui.QStandardItem(""),
-                       QtGui.QStandardItem(""),
-                       QtGui.QStandardItem("")]
+        record = {}
         if radarItem:
-            self.radarItem = radarItem
-            role = QtCore.Qt.DisplayRole
-            self.rowData = self.model.rowDataFromRadarItem(radarItem)
-            rowDataCopy = self.rowData
+            row = self.model.rowFromId(radarItem.id())
+            self.rowIndexes = self.model.rowModelIndexFromId(radarItem.id())
+            record = self.model.rawDataFromRow(row)
 
-        self.form.name_lineEdit.setText(rowDataCopy[0].data(role))
-        self.form.description_plainTextEdit.setPlainText(rowDataCopy[3].data(role))
-        self.form.comments_plainTextEdit.setPlainText(rowDataCopy[4].data(role))
-        if not radarItem:
+        if record:
+            self.form.name_lineEdit.setText(record["name"])
+            self.form.description_plainTextEdit.setPlainText(record["description"])
+            self.form.comments_plainTextEdit.setPlainText("".join(record["comments"]))
+
+        if not record:
             self.form.addTag_lineEdit.setText("")
 
     def writeData(self):
-        role = QtCore.Qt.DisplayRole
+        role = QtCore.Qt.EditRole
         sender = self.sender()
-        if self.rowData:
+        if self.rowIndexes:
             if sender is self.form.name_lineEdit:
-                self.rowData[0].setData(self.form.name_lineEdit.text(), role)
+                self.model.setData(self.rowIndexes["name"], self.form.name_lineEdit.text(), role)
             elif sender is self.form.description_plainTextEdit:
-                self.rowData[3].setData(self.form.description_plainTextEdit.toPlainText(), role)
-            elif sender is self.form.comments_plainTextEdit:
-                self.rowData[4].setData(self.form.comments_plainTextEdit.toPlainText(), role)
+                self.model.setData(self.rowIndexes["description"], self.form.description_plainTextEdit.toPlainText(), role)
 
     def clearData(self):
         self.radarItem = None
-        self.rowData = []
+        self.record = {}
+        self.rowIndexes = {}
         self.setRadarItem(None)
 
 
@@ -564,9 +542,9 @@ class MainWindow(QtGui.QMainWindow):
     def createMenus(self):
         self.fileMenu = self.menuBar().addMenu(self.tr("&File"))
 
-        self.fileMenu.addAction(self.openSceneAct)
-        self.fileMenu.addAction(self.newSceneAct)
-        self.fileMenu.addAction(self.saveSceneAct)
+        # self.fileMenu.addAction(self.openSceneAct)
+        # self.fileMenu.addAction(self.newSceneAct)
+        # self.fileMenu.addAction(self.saveSceneAct)
 
         self.fileMenu.addSeparator()
         self.fileMenu.addAction(self.exitAct)
@@ -624,8 +602,8 @@ class MainWindow(QtGui.QMainWindow):
         :return: None
         """
         radarGraphicsView = self.centralTab.tabContainer.widget(tabIndex)
-        self.radarListView.setModel(radarGraphicsView.scene.dataModel)
-        self.radarItemAttributeEditor.setModel(radarGraphicsView.scene.dataModel)
+        self.radarListView.setModel(radarGraphicsView.scene.tableModel)
+        self.radarItemAttributeEditor.setModel(radarGraphicsView.scene.tableModel)
 
     def saveScene(self):
         log.debug("Save")
@@ -634,14 +612,13 @@ class MainWindow(QtGui.QMainWindow):
         log.debug("Open : {0}".format(data))
         dbScene = RadarMongoDBScene(data)
         scene = RadarGraphicsScene(-400,-300,800,600)
-        scene.setDbScene(dbScene)
-
+        scene.setRadarMogoDbScene(dbScene)
         radar = RadarGraphicsView(scene, self)
         self.openSceneList.append(scene)
         self.centralTab.addRadarGraphicsView(data["name"], radar)
-        scene.radarItemClicked.connect(self.updateRadarAttributeEditor)
+        # scene.radarItemClicked.connect(self.updateRadarAttributeEditor)
         scene.radarItemAdded.connect(self.updateRadarAttributeEditor)
-        self.radarListView.radarSelectionChanged.connect(self.selectRadarItemFromListView)
+        # self.radarListView.radarSelectionChanged.connect(self.selectRadarItemFromListView)
 
     def newScene(self):
         """
