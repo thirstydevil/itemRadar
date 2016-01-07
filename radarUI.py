@@ -9,7 +9,8 @@ import uuid
 import logging as log
 import radarAttributeEditorForm
 import radarListForm
-reload(radarListForm)
+import radarSelectSceneForm
+from radarDBHandle import RadarMongoDBScene, ScenesTableModel
 
 log.basicConfig(level=log.DEBUG)
 
@@ -24,32 +25,79 @@ class RadarGraphicsItem(QtGui.QGraphicsItem):
       item classification etc
     """
 
+    radarItemHovered = Signal("")
+
     def __init__(self, parent=None):
         super(RadarGraphicsItem, self).__init__(parent)
         self.setFlags(QtGui.QGraphicsItem.ItemIsSelectable | QtGui.QGraphicsItem.ItemIsMovable)
         self.brush = QtGui.QBrush(QtGui.QColor.fromRgb(34, 255, 17))
         self.brushSelected = QtGui.QBrush(QtGui.QColor.fromRgb(51, 187, 255))
+        self.brushHover = QtGui.QBrush(QtGui.QColor.fromRgb(255, 255, 255))
         self.pen = QtGui.QPen(QtGui.QColor.fromRgb(153, 38, 0, 50), 2)
         self.diameter = 12
         self._selected = False
-        self._id = uuid.uuid4()
+        self._hovering = False
+        self.setAcceptHoverEvents(True)
+        self.dotRect = QtCore.QRectF(0-self.diameter / 2, 0 - self.diameter / 2, self.diameter, self.diameter)
+
+    def setId(self, id):
+        self._id = id
+
+    def toolTip(self, *args, **kwargs):
+        model = self.scene().dataModel
+        itemRowData = model.rowDataFromUUID(self.id())
+        return itemRowData[0].data(QtCore.Qt.DisplayRole)[:4] + ".."
+
+    def hoverEnterEvent(self, *args, **kwargs):
+        self._hovering = True
+        self.update()
+        return super(RadarGraphicsItem, self).hoverEnterEvent(*args, **kwargs)
+
+    def hoverLeaveEvent(self, *args, **kwargs):
+        """
+        I'd like to draw my own tooltip when hovering to help identify hard some dots
+        :param args:
+        :param kwargs:
+        :return:
+        """
+        self._hovering = False
+        self.update()
+        return super(RadarGraphicsItem, self).hoverLeaveEvent(*args, **kwargs)
 
     def id(self):
         return str(self._id)
 
     def boundingRect(self, *args, **kwargs):
-        return QtCore.QRectF(0-self.diameter / 2, 0 - self.diameter / 2, self.diameter, self.diameter)
+        if not self._hovering:
+            return self.dotRect
+        else:
+            return QtCore.QRectF(0-self.diameter / 2, 0 - self.diameter / 2 -2, self.diameter + 36, self.diameter+4)
 
     def paint(self, painter, option, widget, **kwargs):
+        """
+        Custom widget to paint my own dots and react to status updates and when a user is potentially updating it.
+        If I use a Db backend then multiple users could be working on the same scene.  Thus we may want to lock an
+        item selected by a user.
+        :param painter:
+        :param option:
+        :param widget:
+        :param kwargs:
+        :return: None
+        """
         if self._selected:
             b = self.brushSelected
         else:
             b = self.brush
         if self.isSelected():
             b = self.brushSelected
+        if self._hovering:
+            # paint the tooltip.  Remember that when painting new things we need to update the boundingRect
+            # so that the item redraws correctly.
+            b = self.brushHover
+            #painter.drawText( QtCore.QPoint( 12, + 4  ) ,self.toolTip())
         painter.setPen(self.pen)
         painter.setBrush(b)
-        painter.drawEllipse(self.boundingRect())
+        painter.drawEllipse(self.dotRect)
 
     def mousePressEvent(self, event, **kwargs):
         self._selected = True
@@ -72,9 +120,14 @@ class RadarGraphicsScene(QtGui.QGraphicsScene):
     radarItemClicked = Signal(RadarGraphicsItem)
     radarItemAdded = Signal(RadarGraphicsItem)
 
-    def __init__(self, *args, **kwds):
-        QtGui.QGraphicsScene.__init__(self, *args, **kwds)
+    def __init__(self,*args, **kwargs):
+        print kwargs
+        super(RadarGraphicsScene, self).__init__(*args, **kwargs)
         self.dataModel = RadarItemModel()
+        self.dbScene = None
+
+    def setDbScene(self, scene ):
+        self.dbScene = scene
 
     def mouseDoubleClickEvent(self, QGraphicsSceneMouseEvent):
         if QGraphicsSceneMouseEvent.button() == QtCore.Qt.LeftButton and \
@@ -90,7 +143,9 @@ class RadarGraphicsScene(QtGui.QGraphicsScene):
         return super(RadarGraphicsScene, self).mousePressEvent(QGraphicsSceneMouseEvent)
 
     def addItem(self, item, **kwargs):
-        self.dataModel.insertNewRowFromRadarItem(item)
+        id = self.dbScene.newItem()
+        item.setId(id)
+        # self.dataModel.insertNewRowFromRadarItem(item)
         super(RadarGraphicsScene, self).addItem(item)
         self.radarItemAdded.emit(item)
 
@@ -187,6 +242,7 @@ class RadarGraphicsView(QtGui.QGraphicsView):
         self.backgroundPenLinesBold = QtGui.QPen(QtGui.QColor.fromRgb(153, 38, 0, 80), 2)
 
         self.setupBackground()
+        self.setupAnimatedRadar()
 
         self.scene.sceneDoubleClicked.connect(self.addRadarItem)
 
@@ -200,7 +256,44 @@ class RadarGraphicsView(QtGui.QGraphicsView):
         e = RadarGraphicsItem()
         e.setPos(scenePos)
         self.scene.addItem(e)
+        try:
+            e.radarItemHovered.connect(self.test)
+        except:pass
         log.debug("X{0}, Y{1}".format(scenePos.x()-5, scenePos.y()-5))
+
+    def test(self):
+        self.parent().showToolTip("FOBAR")
+
+    def showHideAnimatedRadar(self, state):
+        item = getattr(self, "radarAnimItem", None)
+        if item:
+            if state:
+                self.timeline.stop()
+                item.hide()
+            else:
+                item.show()
+                self.timeline.start()
+
+
+    def setupAnimatedRadar(self):
+        pen = QtGui.QPen(QtGui.QColor.fromRgb(153, 38, 0, 25), 2)
+        brush = QtGui.QBrush(QtGui.QColor.fromRgb(0, 150, 150, 10))
+        rad = self.maxRadarDiameter() / 2
+        self.radarAnimItem = self.scene.addEllipse(0-rad, 0-rad, rad*2, rad*2, pen, brush)
+        self.radarAnimItem.setPos(0,0)
+        self.radarAnimItem.setSpanAngle(360 * 2)
+        self.timeline = QtCore.QTimeLine(5000)
+        self.timeline.setEasingCurve(QtCore.QEasingCurve.Linear)
+        self.timeline.setLoopCount(0)
+        self.timeline.setFrameRange(0, 1)
+        self.animclip = QtGui.QGraphicsItemAnimation()
+        self.animclip.setItem(self.radarAnimItem)
+        self.animclip.setTimeLine(self.timeline)
+        self.animclip.setPosAt(0, QtCore.QPointF(0, 0))
+
+        self.animclip.setRotationAt(1, 360)
+        self.timeline.start()
+
 
     def setupBackground(self):
         """
@@ -210,12 +303,16 @@ class RadarGraphicsView(QtGui.QGraphicsView):
         backgroundBrush = self.backgroundBrush
         backgroundPenLines = self.backgroundPenLines
         backgroundPenRings = self.backgroundPenRings
-        diameter = self.scene.width() + self.scene.height() / 2
+        diameter = self.maxRadarDiameter()
+        topY = diameter / 2 * -1
+        topX = diameter / 2 * -1
+        bottomX = topX * -1
+        bottomY = topY * -1
         ringCount = 10
         ringOffset = diameter / ringCount
-        screenPosX = self.scene.width() / 2 * -1
-        screenPosY = -self.scene.height() / 2
-        numberOfLines = 16
+        screenPosX = (diameter / 2) * -1
+        screenPosY = (diameter / 2) * -1
+        numberOfLines = ringCount * 2
         offset = self.scene.width() / numberOfLines
 
         # draw the radar circles
@@ -226,16 +323,55 @@ class RadarGraphicsView(QtGui.QGraphicsView):
         # overlay the grid
         for i in range(numberOfLines):
             if i not in [0, numberOfLines]:
-                l = self.scene.addLine(screenPosX, -300, screenPosX+1, 300, backgroundPenLines)
-                ll = self.scene.addLine(-400, screenPosY, 400,screenPosY+1, backgroundPenLines)
+                l = self.scene.addLine(screenPosX, topX, screenPosX+1, bottomX, backgroundPenLines)
+                ll = self.scene.addLine(topX, screenPosY, bottomX, screenPosY+1, backgroundPenLines)
 
                 ## Draw the darker center lines
                 if screenPosX == 0:
                     l.setPen(self.backgroundPenLinesBold)
                 if screenPosY == 0:
                     ll.setPen(self.backgroundPenLinesBold)
-            screenPosX += offset
-            screenPosY += offset
+            screenPosX += ringOffset / 2
+            screenPosY += ringOffset / 2
+
+    def maxRadarDiameter(self):
+        return self.scene.width() + self.scene.height() / 2
+
+
+class RadarSelectScenePanel(QtGui.QDockWidget):
+
+    radarSelectionChanged = Signal(dict)
+
+    def __init__(self, parent=None):
+        super(RadarSelectScenePanel, self).__init__(" Radar List", parent)
+        self.setAllowedAreas(QtCore.Qt.LeftDockWidgetArea | QtCore.Qt.RightDockWidgetArea)
+        containerWidget = QtGui.QWidget(self)
+        self.form = radarSelectSceneForm.Ui_Form()
+        self.form.setupUi(containerWidget)
+        self.setWidget(containerWidget)
+        self.setWidget(containerWidget)
+        self.radarDbHandle = RadarMongoDBScene()
+        self.radarDbHandle.getScenes()
+
+        self.model = QtGui.QSortFilterProxyModel(self)
+        self.model.setSourceModel(ScenesTableModel(self))
+        self.form.tableView_radarScenes.setModel(self.model)
+        self.form.tableView_radarScenes.resizeColumnsToContents()
+        self.model.setFilterKeyColumn(1)
+        self.form.lineEdit_filter.textChanged.connect(self.model.setFilterRegExp)
+
+        for cIndex in self.model.sourceModel().hiddenColumns:
+            self.form.tableView_radarScenes.setColumnHidden(cIndex, True)
+        self.form.pushButton_new.clicked.connect(self.model.sourceModel().addNewRadar)
+
+        self.form.tableView_radarScenes.doubleClicked.connect(self.radarDoubleClicked)
+
+    def radarDoubleClicked(self, index):
+        modelIndex = self.model.mapToSource(index)
+        row = modelIndex.row()
+        data = self.model.sourceModel().radarFromRow(row)
+        self.radarSelectionChanged.emit(data)
+
 
 
 class RadarFilterListPanel(QtGui.QDockWidget):
@@ -264,6 +400,7 @@ class RadarFilterListPanel(QtGui.QDockWidget):
         assert isinstance(self.model, RadarItemModel)
         data = self.model.rowDataFromRadarItem(radarItem)
         self.form.itemListView.selectionModel().select(data[0].index(), QtGui.QItemSelectionModel.ClearAndSelect)
+        self.form.itemListView.scrollTo(data[0].index())
 
     def emitSelectionChange(self):
         modelIndex = self.form.itemListView.selectionModel().selectedIndexes()[0]
@@ -303,6 +440,7 @@ class RadarItemAttributeEditor(QtGui.QDockWidget):
                        QtGui.QStandardItem(""),
                        QtGui.QStandardItem("")]
         if radarItem:
+            self.radarItem = radarItem
             role = QtCore.Qt.DisplayRole
             self.rowData = self.model.rowDataFromRadarItem(radarItem)
             rowDataCopy = self.rowData
@@ -359,13 +497,15 @@ class MainWindow(QtGui.QMainWindow):
         ## on items with the header data
         self.openSceneList = []
 
+        self.radarSelectSceneView = RadarSelectScenePanel(self)
+        self.radarSelectSceneView.radarSelectionChanged.connect(self.openScene)
+        self.addDockWidget(QtCore.Qt.LeftDockWidgetArea, self.radarSelectSceneView)
+
         self.radarListView = RadarFilterListPanel(self)
         self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self.radarListView)
 
         self.radarItemAttributeEditor = RadarItemAttributeEditor(self)
         self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self.radarItemAttributeEditor)
-
-        self.newScene()
 
     def update_progress(self, n, nrows):
         self.pb.show()
@@ -444,16 +584,45 @@ class MainWindow(QtGui.QMainWindow):
         print args
 
     def selectRadarItemFromListView(self, uuid):
+        """
+        Handles selecting of radar items in the scene by the UUID.  Other views can pass the UUID
+        via a signal.  This slot can then handle the the selection of the items in the scene from the UUID
+        :param uuid: str
+        :return: None
+        """
+        # Grab the View from the current Tab and thus dig down into the scene graph.
+        # The the method to extract the radarItem.
         radarGraphicsView = self.centralTab.tabContainer.currentWidget()
-        assert isinstance(radarGraphicsView, RadarGraphicsView)
-        print radarGraphicsView.scene.itemFromUUID(uuid)
+        item = radarGraphicsView.scene.itemFromUUID(uuid)
 
-    def updateRadarAttributes(self, radarItem):
-        print "update radar attribute editor on : {0}".format(radarItem.id())
+        if item:
+            # It was difficult to find out the best way to select items in the scene.  This is like drawing
+            # a box selection on the viewport and the contained items are selected.
+            radarGraphicsView.scene.clearSelection()
+            painterPath = QtGui.QPainterPath()
+            painterPath.addRect(item.boundingRect())
+            painterPath.translate(item.scenePos())
+            radarGraphicsView.scene.setSelectionArea(painterPath, QtGui.QTransform())
+            self.updateRadarAttributeEditor(item)
+
+
+    def updateRadarAttributeEditor(self, radarItem):
+        """
+
+        :param radarItem: RadarGraphicsItem
+        :return:
+        """
+        log.debug("update radar attribute editor on : {0}".format(radarItem.id()))
         self.radarItemAttributeEditor.setRadarItem(radarItem)
         self.radarListView.updateSelectedFromRadarItem(radarItem)
 
+
     def connectModel(self, tabIndex):
+        """
+        When a new tab is selected we need to push the correct model onto the various editors
+        :param tabIndex: int
+        :return: None
+        """
         radarGraphicsView = self.centralTab.tabContainer.widget(tabIndex)
         self.radarListView.setModel(radarGraphicsView.scene.dataModel)
         self.radarItemAttributeEditor.setModel(radarGraphicsView.scene.dataModel)
@@ -461,17 +630,30 @@ class MainWindow(QtGui.QMainWindow):
     def saveScene(self):
         log.debug("Save")
 
-    def openScene(self):
-        log.debug("Open")
+    def openScene(self, data):
+        log.debug("Open : {0}".format(data))
+        dbScene = RadarMongoDBScene(data)
+        scene = RadarGraphicsScene(-400,-300,800,600)
+        scene.setDbScene(dbScene)
+
+        radar = RadarGraphicsView(scene, self)
+        self.openSceneList.append(scene)
+        self.centralTab.addRadarGraphicsView(data["name"], radar)
+        scene.radarItemClicked.connect(self.updateRadarAttributeEditor)
+        scene.radarItemAdded.connect(self.updateRadarAttributeEditor)
+        self.radarListView.radarSelectionChanged.connect(self.selectRadarItemFromListView)
 
     def newScene(self):
+        """
+        Create a new radar scene and adds it to the central tab widget
+        :return: None
+        """
         log.debug("New")
         scene = RadarGraphicsScene(-400,-300,800,600, parent=self)
         radar = RadarGraphicsView(scene, self)
         self.openSceneList.append(scene)
         self.centralTab.addRadarGraphicsView("Untitled", radar)
-        scene.radarItemClicked.connect(self.updateRadarAttributes)
-        scene.radarItemAdded.connect(self.updateRadarAttributes)
-
+        scene.radarItemClicked.connect(self.updateRadarAttributeEditor)
+        scene.radarItemAdded.connect(self.updateRadarAttributeEditor)
         self.radarListView.radarSelectionChanged.connect(self.selectRadarItemFromListView)
 

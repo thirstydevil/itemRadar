@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 
-# Form implementation generated from reading ui file 'D:\__CODE\itemRadar\resources\ui\radarListForm.ui'
+# Form implementation generated from reading ui file 'C:\Users\David\PycharmProjects\pythonTestBed\itemRadar\resources\ui\radarListForm.ui'
 #
-# Created: Tue Jan 05 19:08:18 2016
-#      by: pyside-uic 0.2.15 running on PySide 1.2.2
+# Created: Wed Jan 06 23:49:50 2016
+#      by: pyside-uic 0.2.15 running on PySide 1.2.4
 #
 # WARNING! All changes made in this file will be lost!
 
@@ -32,7 +32,7 @@ class Ui_Form(object):
         self.itemListView.setProperty("showDropIndicator", False)
         self.itemListView.setAlternatingRowColors(False)
         self.itemListView.setResizeMode(QtGui.QListView.Adjust)
-        self.itemListView.setModelColumn(2)
+        self.itemListView.setModelColumn(0)
         self.itemListView.setObjectName("itemListView")
         self.verticalLayout.addWidget(self.itemListView)
 
