@@ -1,6 +1,7 @@
 __author__ = "dmoulder"
 
-from PySide import QtCore
+from PySide import QtCore, QtGui
+from PySide.QtCore import Signal
 from pymongo import MongoClient
 from pprint import pformat, pprint
 import datetime
@@ -40,7 +41,7 @@ class RadarMongoDBScene(QtCore.QObject):
     item_record_template = {
         "name": "New",
         "pos": [0,0],
-        "colour": [255, 255, 255, 0],
+        "colour": [34, 255, 17],
         "scene_id": None,
         "link": "",
         "description": "",
@@ -71,6 +72,8 @@ class RadarMongoDBScene(QtCore.QObject):
     def __updateItem__(self, id, data):
         collection = self.db.get_collection("items")
         collection.find_one_and_update({"_id":id}, {"$set": data})
+        return self.findItem(id)
+
 
     @classmethod
     def findSceneFromId(cls, id):
@@ -133,7 +136,7 @@ class RadarMongoDBScene(QtCore.QObject):
     def updatePosition(self, itemId, x, y):
         itemRecord = self.findItem(itemId)
         itemRecord["pos"] = [x, y]
-        self.__updateItem__(itemId, itemRecord)
+        return self.__updateItem__(itemId, itemRecord)
 
     def postComment(self, itemId, text):
         comment = {"date": datetime.datetime.now(),
@@ -141,41 +144,52 @@ class RadarMongoDBScene(QtCore.QObject):
                    "text": str(text)}
         itemRecord = self.findItem(itemId)
         itemRecord["comments"].append(comment)
-        self.__updateItem__(itemId, itemRecord)
+        return self.__updateItem__(itemId, itemRecord)
 
     def updateDescription(self, itemId, text):
         itemRecord = self.findItem(itemId)
         itemRecord["description"] = text
-        self.__updateItem__(itemId, itemRecord)
+        return self.__updateItem__(itemId, itemRecord)
 
     def addTag(self, itemId, tag):
         itemRecord = self.findItem(itemId)
         if tag not in itemRecord["tags"]:
             itemRecord["tags"].append(tag)
-            self.__updateItem__(itemId, itemRecord)
+            return self.__updateItem__(itemId, itemRecord)
+        else:
+            return itemRecord
 
     def deleteTag(self, itemId, tag):
         itemRecord = self.findItem(itemId)
         if tag in itemRecord["tags"]:
             itemRecord["tags"] = itemRecord["tags"].remove(tag)
-            self.__updateItem__(itemId, itemRecord)
+            return self.__updateItem__(itemId, itemRecord)
+        return itemRecord
 
     def clearTags(self, itemId):
         itemRecord = self.findItem(itemId)
         itemRecord["tags"] = []
-        self.__updateItem__(itemId, itemRecord)
+        return self.__updateItem__(itemId, itemRecord)
+
+    def setTags(self, itemId, tags):
+        assert getattr(tags, "__iter__", None)
+        itemRecord = self.findItem(itemId)
+        itemRecord["tags"] = tags
+        return self.__updateItem__(itemId, itemRecord)
 
     def updateColour(self, itemId, colour):
         itemRecord = self.findItem(itemId)
-        itemRecord["colour"] = [colour.toRGBF()]
-        self.__updateItem__(itemId, itemRecord)
+        colour = colour.toRgb()
+        itemRecord["colour"] = [colour.red(), colour.green(), colour.blue()]
+        return self.__updateItem__(itemId, itemRecord)
 
     def updateLink(self, itemId, hyperLink):
         itemRecord = self.findItem(itemId)
         itemRecord["link"] = hyperLink
-        self.__updateItem__(itemId, itemRecord)
+        return self.__updateItem__(itemId, itemRecord)
 
     def findItem(self, itemId):
+        # note to self.  should be a ObjectId not a str
         return self.db.items.find_one({"_id": itemId, "scene_id": self.sceneId()})
 
 class ScenesTableModel(QtCore.QAbstractTableModel):
@@ -229,13 +243,19 @@ class ItemsTableModel(QtCore.QAbstractTableModel):
 
     columns = RadarMongoDBScene.scene_template.keys()
 
+    updateGraphicsItemColour = Signal(str, QtGui.QColor)
+
     def __init__(self, radarMongoScene, parent=None):
         super(ItemsTableModel, self).__init__(parent)
         assert isinstance(radarMongoScene, RadarMongoDBScene)
         self.radarMongoScene = radarMongoScene
         self.datatable = []
         self.columns = RadarMongoDBScene.item_record_template.keys()
+        self.hiddenColumns = [self.columns.index(k) for k in self.columns if k not in ["name"]]
         self.sync()
+
+        self.colourBrush = QtGui.QBrush(QtGui.QColor(255, 0, 0))
+        self.colourBrush.setStyle(QtCore.Qt.SolidPattern)
 
     def headerData(self, col, orientation, role):
         if orientation == QtCore.Qt.Horizontal and role == QtCore.Qt.DisplayRole:
@@ -259,6 +279,10 @@ class ItemsTableModel(QtCore.QAbstractTableModel):
     def rawDataFromRow(self, row):
         return self.datatable[row]
 
+    def rawDataFromId(self, id):
+        row = self.rowFromId(id)
+        return self.rawDataFromRow(row)
+
     def addNewRadarItem(self):
         self.datatable.append(self.radarMongoScene.newItem())
         self.layoutChanged.emit()
@@ -277,13 +301,20 @@ class ItemsTableModel(QtCore.QAbstractTableModel):
     def data(self, index, role=QtCore.Qt.DisplayRole):
         if not index.isValid():
             return
+
+        row = self.datatable[index.row()]
+        column_key = self.columns[index.column()]
+        data = row[column_key]
+
         if role == QtCore.Qt.DisplayRole:
-            row = self.datatable[index.row()]
-            column_key = self.columns[index.column()]
-            data = row[column_key]
+
             if column_key == "created_on":
                 return data.strftime("%Y-%m-%d:%X")
             return row[column_key]
+
+        if role == QtCore.Qt.BackgroundRole:
+            if column_key == "colour":
+                return QtGui.QBrush(QtGui.QColor(data[0], data[1], data[2]))
         else:
             return None
 
@@ -293,14 +324,28 @@ class ItemsTableModel(QtCore.QAbstractTableModel):
             row = index.row()
             column = index.column()
             col_name = self.columns[column]
-            print row, column, col_name
             idx = self.datatable[row]["_id"]
+            newData = None
             if col_name == "name":
-                self.radarMongoScene.updateItemName(idx, value)
+                newData = self.radarMongoScene.updateItemName(idx, value)
+            elif col_name == "comments":
+                newData = self.radarMongoScene.postComment(idx, value)
+            elif col_name == "tags":
+                if getattr(value, "__iter__", ""):
+                    newData = self.radarMongoScene.setTags(idx, value)
+                else:
+                    newData = self.radarMongoScene.addTag(idx, value)
+            elif col_name == "tags":
+                newData = self.radarMongoScene.addTag(idx, value)
+            elif col_name == "colour":
+                newData = self.radarMongoScene.updateColour(idx, value)
+                self.updateGraphicsItemColour.emit(str(idx), value)
 
-            self.datatable[row][col_name] = value
+            if newData:
+                self.datatable[row] = newData
+                self.dataChanged.emit(index, index)
 
-            self.dataChanged.emit(index, index)
+
             return True
         return False
 

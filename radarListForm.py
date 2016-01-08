@@ -2,7 +2,7 @@
 
 # Form implementation generated from reading ui file 'D:\__CODE\itemRadar\resources\ui\radarListForm.ui'
 #
-# Created: Thu Jan 07 19:17:07 2016
+# Created: Fri Jan 08 17:49:39 2016
 #      by: pyside-uic 0.2.15 running on PySide 1.2.2
 #
 # WARNING! All changes made in this file will be lost!
@@ -32,6 +32,11 @@ class Ui_Form(object):
         self.itemTableView.setProperty("showDropIndicator", False)
         self.itemTableView.setAlternatingRowColors(False)
         self.itemTableView.setObjectName("itemTableView")
+        self.itemTableView.horizontalHeader().setHighlightSections(False)
+        self.itemTableView.horizontalHeader().setSortIndicatorShown(True)
+        self.itemTableView.horizontalHeader().setStretchLastSection(True)
+        self.itemTableView.verticalHeader().setVisible(False)
+        self.itemTableView.verticalHeader().setDefaultSectionSize(20)
         self.verticalLayout.addWidget(self.itemTableView)
 
         self.retranslateUi(Form)
