@@ -168,6 +168,11 @@ class RadarMongoDBScene(QtCore.QObject):
         itemRecord["link"] = hyperLink
         self.__updateItem__(itemId, itemRecord)
 
+    def setItemLock(self, itemId, state):
+        itemRecord = self.findItem(itemId)
+        itemRecord["locked"] = True
+        self.__updateItem__(itemId, itemRecord)
+
     def findItem(self, itemId):
         return self.db.items.find_one({"_id": itemId, "scene_id": self.sceneId()})
 
