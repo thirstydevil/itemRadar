@@ -19,7 +19,6 @@ def main():
     app.processEvents()
 
     time.sleep(.5)
-
     splash.close()
     ui = radarUI.MainWindow()
     ui.show()

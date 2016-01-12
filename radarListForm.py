@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 
-# Form implementation generated from reading ui file 'C:\Users\David\PycharmProjects\pythonTestBed\itemRadar\resources\ui\radarListForm.ui'
+# Form implementation generated from reading ui file 'D:\__CODE\itemRadar\resources\ui\radarListForm.ui'
 #
-# Created: Wed Jan 06 23:49:50 2016
-#      by: pyside-uic 0.2.15 running on PySide 1.2.4
+# Created: Fri Jan 08 17:49:39 2016
+#      by: pyside-uic 0.2.15 running on PySide 1.2.2
 #
 # WARNING! All changes made in this file will be lost!
 
@@ -27,14 +27,17 @@ class Ui_Form(object):
         self.pushButton.setObjectName("pushButton")
         self.horizontalLayout.addWidget(self.pushButton)
         self.verticalLayout.addLayout(self.horizontalLayout)
-        self.itemListView = QtGui.QListView(Form)
-        self.itemListView.setEditTriggers(QtGui.QAbstractItemView.NoEditTriggers)
-        self.itemListView.setProperty("showDropIndicator", False)
-        self.itemListView.setAlternatingRowColors(False)
-        self.itemListView.setResizeMode(QtGui.QListView.Adjust)
-        self.itemListView.setModelColumn(0)
-        self.itemListView.setObjectName("itemListView")
-        self.verticalLayout.addWidget(self.itemListView)
+        self.itemTableView = QtGui.QTableView(Form)
+        self.itemTableView.setEditTriggers(QtGui.QAbstractItemView.NoEditTriggers)
+        self.itemTableView.setProperty("showDropIndicator", False)
+        self.itemTableView.setAlternatingRowColors(False)
+        self.itemTableView.setObjectName("itemTableView")
+        self.itemTableView.horizontalHeader().setHighlightSections(False)
+        self.itemTableView.horizontalHeader().setSortIndicatorShown(True)
+        self.itemTableView.horizontalHeader().setStretchLastSection(True)
+        self.itemTableView.verticalHeader().setVisible(False)
+        self.itemTableView.verticalHeader().setDefaultSectionSize(20)
+        self.verticalLayout.addWidget(self.itemTableView)
 
         self.retranslateUi(Form)
         QtCore.QMetaObject.connectSlotsByName(Form)
