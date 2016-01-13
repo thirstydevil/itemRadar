@@ -1,22 +1,44 @@
 __author__ = 'David Moulder'
-__version__ = "0.0.1"
+__version__ = "0.9.0"
 __date__ = "05/06/2016"
 
 from PySide import QtCore, QtGui
 from PySide.QtCore import Signal
 import os
-import uuid
 import logging as log
 import radarAttributeEditorForm
 import radarListForm
 import radarSelectSceneForm
-from radarDBHandle import RadarMongoDBScene, ScenesTableModel, ItemsTableModel
+from radarDBHandle import MongoSceneHandle, RadarScenesTableModel, RadarItemsTableModel, getpass
 
-log.basicConfig(level=log.DEBUG)
+log.basicConfig(level=log.INFO)
 
 g_ROOT_PATH = os.path.dirname(__file__)
 g_RESOURCE_PATH = os.path.join(g_ROOT_PATH, "resources")
 g_IMAGES_PATH = os.path.join(g_RESOURCE_PATH, "images")
+
+class FilterTagsWidget(QtGui.QDialog):
+    def __init__(self, parent):
+        super(FilterTagsWidget, self).__init__(parent)
+        self._scene = None
+        self.flowLayout = FlowLayout(self)
+        self.setLayout(self.flowLayout)
+        self.__tags = []
+
+    def tagsEdited(self, *args):
+        print 'HERE'
+
+    def setScene(self, scene):
+        if scene:
+            self._scene = scene
+            self.__tags = []
+            self.flowLayout.clear()
+            self.__tags = self._scene.mongoSceneHandle.allSceneTags()
+            for tag in self.__tags:
+                cb = QtGui.QCheckBox(tag)
+                self.flowLayout.addWidget(cb)
+                cb.toggled.connect(self.tagsEdited)
+
 
 class RadarGraphicsItem(QtGui.QGraphicsItem):
     """
@@ -32,22 +54,36 @@ class RadarGraphicsItem(QtGui.QGraphicsItem):
         self.setFlags(QtGui.QGraphicsItem.ItemIsSelectable | QtGui.QGraphicsItem.ItemIsMovable)
         self.setFlag(QtGui.QGraphicsItem.ItemSendsGeometryChanges, True)
         self.brush = QtGui.QBrush(QtGui.QColor.fromRgb(34, 255, 17))
-        self.brushSelected = QtGui.QBrush(QtGui.QColor.fromRgb(51, 187, 255))
-        self.brushHover = QtGui.QBrush(QtGui.QColor.fromRgb(255, 255, 255))
-        self.pen = QtGui.QPen(QtGui.QColor.fromRgb(153, 38, 0, 50), 2)
+        self.brushSelected = QtGui.QBrush(QtGui.QColor.fromRgb(255, 255, 255))
+        # self.brushSelected = self.brush
+        # self.brushHover = QtGui.QBrush(QtGui.QColor.fromRgb(255, 255, 255))
         self.diameter = 12
         self._selected = False
         self._hovering = False
         self.setAcceptHoverEvents(True)
-        self.dotRect = QtCore.QRectF(0-self.diameter / 2, 0 - self.diameter / 2, self.diameter, self.diameter)
         self._cachePos = None
+        self.record = {}
+
+    @property
+    def dotRect(self):
+        if any([self._selected, self._hovering, self.isSelected()]):
+            self.diameter = 14
+        else:
+            self.diameter = 12
+        return QtCore.QRectF(0-self.diameter / 2, 0 - self.diameter / 2, self.diameter, self.diameter)
+
+    @property
+    def pen(self):
+        if any([self._selected, self._hovering, self.isSelected()]):
+            return QtGui.QPen(QtGui.QColor.fromRgb(255, 255, 255), 2)
+        else:
+            return QtGui.QPen(QtGui.QColor.fromRgb(153, 38, 0, 50), 2)
 
     def cachePosition(self):
         self._cachePos = self.scenePos()
 
     def hasMoved(self):
         return self._cachePos != self.scenePos()
-
 
     def setId(self, id):
         self._id = id
@@ -56,14 +92,13 @@ class RadarGraphicsItem(QtGui.QGraphicsItem):
         if self.id() == idx:
             log.debug("Update Colour")
             self.setColour(colour)
+            self.update()
 
     def setColour(self, qCol):
         self.brush = QtGui.QBrush(qCol)
 
     def toolTip(self, *args, **kwargs):
-        model = self.scene().dataModel
-        itemRowData = model.rowDataFromUUID(self.id())
-        return itemRowData[0].data(QtCore.Qt.DisplayRole)[:4] + ".."
+        return self.record.get('name', '')[:4] + ".."
 
     def hoverEnterEvent(self, *args, **kwargs):
         self._hovering = True
@@ -101,17 +136,18 @@ class RadarGraphicsItem(QtGui.QGraphicsItem):
         :param kwargs:
         :return: None
         """
+
         if self._selected:
             b = self.brushSelected
         else:
             b = self.brush
-        if self.isSelected():
-            b = self.brushSelected
+        # if self.isSelected():
+        #     b = self.brushSelected
         if self._hovering:
             # paint the tooltip.  Remember that when painting new things we need to update the boundingRect
             # so that the item redraws correctly.
-            b = self.brushHover
-            #painter.drawText( QtCore.QPoint( 12, + 4  ) ,self.toolTip())
+            b = self.brush
+            painter.drawText(QtCore.QPoint( 12, + 4  ) ,self.toolTip())
         painter.setPen(self.pen)
         painter.setBrush(b)
         painter.drawEllipse(self.dotRect)
@@ -129,19 +165,17 @@ class RadarGraphicsItem(QtGui.QGraphicsItem):
 
 class RadarGraphicsScene(QtGui.QGraphicsScene):
     """
-    Reimplemented to access the public methods to do my own thing.  For now, just want mouse access to events
-    In the future I think I'll have to link this to a DB or in the 1st place add some serialisation to this,
-    more investigation needed
+    Reimplemented to access the public methods to do my own thing.
     """
     sceneDoubleClicked = Signal(QtCore.QPointF)
     radarItemClicked = Signal(RadarGraphicsItem)
     radarItemAdded = Signal(RadarGraphicsItem)
+    radarItemMoved = Signal(RadarGraphicsItem)
 
     def __init__(self,*args, **kwargs):
         super(RadarGraphicsScene, self).__init__(*args, **kwargs)
-        self.dbScene = None
-        self.tableModel = None
-        self.sceneDoubleClicked.connect(self.addRadarItem)
+        self.mongoSceneHandle = None
+        self.radarItemTableModel = None
 
         self.backgroundBrush = QtGui.QBrush(QtGui.QColor.fromRgb(34, 17, 17))
         self.backgroundPenLines = QtGui.QPen(QtGui.QColor.fromRgb(0153, 38, 0, 25), 2)
@@ -150,6 +184,98 @@ class RadarGraphicsScene(QtGui.QGraphicsScene):
 
         self.setupBackground()
         self.setupAnimatedRadar()
+        self.attributeEditor = None
+        self.listPanel = None
+
+        self._itemDict = {}
+
+    def initScene(self, mongoSceneHandle, attribEditor, listPanel):
+        """
+        Setup the scene with the data form the db, builds the table model for the views to connect to.
+        :param mongoSceneHandle: MongoSceneHandle, RadarAttributeEditor, RadarListPanel
+        :return: None
+        """
+        self.mongoSceneHandle = mongoSceneHandle
+        self.sourceModel = RadarItemsTableModel(mongoSceneHandle)
+        self.proxyModel = ItemFilterProxyMode(self)
+        self.proxyModel.setSourceModel(self.sourceModel)
+        self.attributeEditor = attribEditor
+        self.listPanel = listPanel
+        self.attributeEditor.clearData()
+        assert isinstance(self.attributeEditor, RadarAttributeEditor)
+        assert isinstance(self.listPanel, RadarListPanel)
+        self.listPanel.form.filter_lineEdit.textChanged.connect(self.proxyModel.setFilterRegExp)
+        self.listPanel.radarListSelectionChanged.connect(self.selectRadarItemByID)
+        self.proxyModel.setFilterKeyColumn(self.sourceModel.columns.index("name"))
+
+        # Add all the items to the scene
+        for i in self.mongoSceneHandle.items():
+            graphicsItem = RadarGraphicsItem()
+            graphicsItem.setId(i["_id"])
+            graphicsItem.setPos(i["pos"][0], i["pos"][1])
+            graphicsItem.setColour(QtGui.QColor(*i["colour"]))
+            graphicsItem.record = i
+            self.addItem(graphicsItem)
+            self.sourceModel.updateGraphicsItemColour.connect(graphicsItem.updateColour)
+
+    def addItem(self, item):
+        idx = getattr(item, 'id', '')
+        if idx:
+            self._itemDict[str(idx())] = item
+        return super(RadarGraphicsScene, self).addItem(item)
+
+    def removeItem(self, item):
+        idx = getattr(item, 'id', '')
+        if idx:
+            self._itemDict.pop(str(idx()), None)
+        super(RadarGraphicsScene, self).removeItem(item)
+
+    def setActive(self):
+        if self.attributeEditor:
+            self.attributeEditor.setGraphicsScene(self)
+        if self.listPanel:
+            self.listPanel.setGraphicsScene(self)
+
+    def radarItemToProxyIndex(self, item, columnName='name'):
+        index = self.radarItemToSourceIndex(item, columnName)
+        if index.isValid() and index.model() is self.sourceModel:
+            return self.proxyModel.mapFromSource(index)
+
+    def radarItemToSourceIndex(self, item, columnName='name'):
+        rowData = self.sourceModel.rowModelIndexFromId(item.id())
+        if rowData:
+            return rowData[columnName]
+
+    def radarItemToSourceRowIndexData(self, item):
+        return self.sourceModel.rowModelIndexFromId(item.id())
+
+    def updateItemRecord(self, item):
+        record = self.sourceModel.rawDataFromId(item.id())
+        item.record = record
+
+    def selectRadarItemByID(self, scene, idx):
+        """
+        Handles selecting of radar items in the scene by the item id from mongoDB.  Other views can pass the id
+        via a signal.  This slot can then handle the the selection of the items in the scene from the id
+        :param idx: str
+        :return: None
+        """
+        # Grab the View from the current Tab and thus dig down into the scene graph.
+        # The the method to extract the radarItem.
+
+        if scene is self:
+            log.debug("Select Radar Item by ID")
+            item = self.itemFromID(idx)
+            log.debug("Found GraphicsItem in Radar : {0}".format(item))
+            if item:
+                # It was difficult to find out the best way to select items in the scene.  This is like drawing
+                # a box selection on the viewport and the contained items are selected.
+                self.clearSelection()
+                painterPath = QtGui.QPainterPath()
+                painterPath.addRect(item.boundingRect())
+                painterPath.translate(item.scenePos())
+                self.attributeEditor.setRadarItem(item)
+                self.setSelectionArea(painterPath, QtGui.QTransform())
 
     def maxRadarDiameter(self):
         return self.width() + self.height() / 2
@@ -172,7 +298,6 @@ class RadarGraphicsScene(QtGui.QGraphicsScene):
         screenPosX = (diameter / 2) * -1
         screenPosY = (diameter / 2) * -1
         numberOfLines = ringCount * 2
-        offset = self.width() / numberOfLines
 
         # draw the radar circles
         for i in range(ringCount):
@@ -221,54 +346,45 @@ class RadarGraphicsScene(QtGui.QGraphicsScene):
                 item.show()
                 self.timeline.start()
 
-
-    def setRadarMogoDbScene(self, scene ):
-        self.dbScene = scene
-        self.tableModel = ItemsTableModel(scene)
-
-        for i in self.dbScene.items():
-            graphicsItem = RadarGraphicsItem()
-            graphicsItem.setId(i["_id"])
-            graphicsItem.setPos(i["pos"][0], i["pos"][1])
-            graphicsItem.setColour(QtGui.QColor(*i["colour"]))
-            self.addItem(graphicsItem)
-            self.tableModel.updateGraphicsItemColour.connect(graphicsItem.updateColour)
-
-
     def mouseDoubleClickEvent(self, QGraphicsSceneMouseEvent):
         if QGraphicsSceneMouseEvent.button() == QtCore.Qt.LeftButton and \
                 QGraphicsSceneMouseEvent.modifiers() == QtCore.Qt.ControlModifier:
-            self.sceneDoubleClicked.emit(QGraphicsSceneMouseEvent.scenePos())
-
+            self.addRadarItem(QGraphicsSceneMouseEvent.scenePos())
         return super(RadarGraphicsScene, self).mouseDoubleClickEvent(QGraphicsSceneMouseEvent)
 
     def mousePressEvent(self, QGraphicsSceneMouseEvent, **kwargs):
         item = self.itemAt(QGraphicsSceneMouseEvent.scenePos())
-        if getattr(item, "id", ""):
-            item.cachePosition()
-            self.radarItemClicked.emit(item)
-        return super(RadarGraphicsScene, self).mousePressEvent(QGraphicsSceneMouseEvent)
+        if item:
+            if getattr(item, "id", ""):
+                item.cachePosition()
+                self.updateItemRecord(item)
+                self.listPanel.selectRadarItem(self, item)
+                self.attributeEditor.setRadarItem(item)
+            return super(RadarGraphicsScene, self).mousePressEvent(QGraphicsSceneMouseEvent)
 
     def mouseReleaseEvent(self, QGraphicsSceneMouseEvent):
         item = self.itemAt(QGraphicsSceneMouseEvent.scenePos())
         if getattr(item, "id", ""):
             if item.hasMoved():
-                record = self.tableModel.rawDataFromId(item.id())
-                self.dbScene.updatePosition(record["_id"], item.scenePos().x(),
-                                            item.scenePos().y())
                 item.cachePosition()
+                index = self.radarItemToSourceIndex(item, 'pos')
+                log.debug("Item Moved")
+                self.sourceModel.setData(index,
+                                         [item.scenePos().x(), item.scenePos().y()],
+                                         QtCore.Qt.EditRole)
+                self.proxyModel.reset()
+
         return super(RadarGraphicsScene, self).mouseReleaseEvent(QGraphicsSceneMouseEvent)
 
-
     def addRadarItem(self, pos):
-        record = self.tableModel.addNewRadarItem()
+        record = self.sourceModel.addNewRadarItem()
         graphicsItem = RadarGraphicsItem()
         graphicsItem.setId(record["_id"])
-        self.tableModel.updateGraphicsItemColour.connect(graphicsItem.updateColour)
+        self.sourceModel.updateGraphicsItemColour.connect(graphicsItem.updateColour)
         self.addItem(graphicsItem)
         graphicsItem.setPos(pos)
-        self.dbScene.updatePosition(record["_id"], pos.x(), pos.y())
-        super(RadarGraphicsScene, self).addItem(graphicsItem)
+        graphicsItem.record = record
+        self.mongoSceneHandle.updatePosition(record["_id"], pos.x(), pos.y())
         self.radarItemAdded.emit(graphicsItem)
 
     def filterRadarItems(self):
@@ -279,52 +395,61 @@ class RadarGraphicsScene(QtGui.QGraphicsScene):
         return [i for i in self.items() if getattr(i, "id", "")]
 
     def itemFromID(self, idx):
+        if idx in self._itemDict:
+            return self._itemDict[idx]
         log.debug("finding RadarGraphicsItem in scene by ID : {0}".format(idx))
         found = [i for i in self.filterRadarItems() if i.id() == idx]
         if found:
             return found[0]
 
 
+class ExtendedQLabel(QtGui.QLabel):
 
-class RadarItemModel(QtGui.QStandardItemModel):
-    """
-    This scene is to filter items on the radar board.
-    """
-    def __init__(self, *args, **kwds):
-        QtGui.QStandardItemModel.__init__(self, *args, **kwds)
+    clicked = Signal()
 
-    def setHeaders(self):
-        self.setColumnCount(6)
-        self.setRowCount(0)
-        self.setHeaderData(0, QtCore.Qt.Horizontal, "UUID")
-        self.setHeaderData(1, QtCore.Qt.Horizontal, "POS")
-        self.setHeaderData(2, QtCore.Qt.Horizontal, "NAME")
-        self.setHeaderData(3, QtCore.Qt.Horizontal, "DESCRIPTION")
-        self.setHeaderData(4, QtCore.Qt.Horizontal, "COMMENTS")
-        self.setHeaderData(4, QtCore.Qt.Horizontal, "TAGS")
+    def __init(self, parent):
+        super(ExtendedQLabel, self).__init__(parent)
 
-    def insertNewRowFromRadarItem(self, radarItem):
-        if getattr(radarItem, "id", ""):
-            idx = QtGui.QStandardItem(radarItem.id())
-            pos = QtGui.QStandardItem("{0},{1}".format(radarItem.scenePos().x(), radarItem.scenePos().y()))
-            name = QtGui.QStandardItem("New")
-            description = QtGui.QStandardItem("")
-            comments = QtGui.QStandardItem("")
-            tags = QtGui.QStandardItem("")
-            self.appendRow([name, pos, idx, description, comments, tags])
+    def mouseReleaseEvent(self, ev):
+        self.clicked.emit()
 
+class SimpleColourPicker(QtGui.QWidget):
 
-    def rowDataFromUUID(self, uuid):
-        foundItems = self.findItems(uuid, column=2)
-        data = []
-        if foundItems:
-            row = foundItems[0].row()
-            for c in range(self.columnCount()):
-                data.append(self.item(row, c))
-        return data
+    setColor = Signal(QtGui.QColor)
 
-    def rowDataFromRadarItem(self, radarItem):
-        return self.rowDataFromUUID(radarItem.id())
+    def __init__(self, parent=None):
+        super(SimpleColourPicker, self).__init__(parent)
+        self.setLayout(QtGui.QHBoxLayout())
+        self.colours = [
+            QtGui.QColor(QtCore.Qt.red),
+            QtGui.QColor(QtCore.Qt.darkRed),
+            QtGui.QColor(QtCore.Qt.green),
+            QtGui.QColor(QtCore.Qt.darkGreen),
+            QtGui.QColor(QtCore.Qt.blue),
+            QtGui.QColor(QtCore.Qt.darkBlue),
+            QtGui.QColor(QtCore.Qt.cyan),
+            QtGui.QColor(QtCore.Qt.darkCyan),
+            QtGui.QColor(QtCore.Qt.magenta),
+            QtGui.QColor(QtCore.Qt.darkMagenta),
+            QtGui.QColor(QtCore.Qt.yellow),
+            QtGui.QColor(QtCore.Qt.darkYellow),
+            QtGui.QColor(QtCore.Qt.gray),
+            QtGui.QColor(QtCore.Qt.lightGray),
+            QtGui.QColor(QtCore.Qt.darkGray),
+        ]
+        self.widgets = []
+        for col in self.colours:
+            w = ExtendedQLabel()
+            self.widgets.append(w)
+            pix = QtGui.QPixmap(QtCore.QSize(24,24))
+            pix.fill(col)
+            w.setPixmap(pix)
+            self.layout().addWidget(w)
+            w.clicked.connect(self.colorSelected)
+
+    def colorSelected(self):
+        col = self.colours[self.widgets.index(self.sender())]
+        self.setColor.emit(col)
 
 
 class CentralWidget(QtGui.QWidget):
@@ -337,15 +462,24 @@ class CentralWidget(QtGui.QWidget):
         self.tabContainer.setTabsClosable(True)
         self.tabContainer.tabCloseRequested.connect(self.closeTab)
 
+    def updateSceneName(self, idx, name):
+        openIds = self.openSceneIds(asString=True)
+        if idx in openIds:
+            index = openIds.index(idx)
+            self.tabContainer.setTabText(index, name)
 
     def closeTab(self, tabIndex):
         log.debug("Close : {0}".format(tabIndex))
         self.tabContainer.removeTab(tabIndex)
 
-    def openSceneIds(self):
+    def openSceneIds(self, asString=False):
         ids = []
         for view in self.getGraphicsViews():
-            ids.append(view.scene.dbScene.sceneId())
+            data = view.scene.mongoSceneHandle.sceneId()
+            if asString:
+                ids.append(str(data))
+            else:
+                ids.append(data)
         return ids
 
     def sceneIsOpen(self, idx):
@@ -371,49 +505,203 @@ class RadarGraphicsView(QtGui.QGraphicsView):
     def id(self):
         return self.scene.dbScene.sceneId()
 
+class SceneFilterProxyMode(QtGui.QSortFilterProxyModel):
+    def __init__(self, parent=None):
+        super(SceneFilterProxyMode, self).__init__(parent)
+        self.__showOnlyMySubscriptions = True
+        self.user = getpass.getuser()
 
-class RadarSelectScenePanel(QtGui.QDockWidget):
+    def setShowOnlyMySubscriptions(self, state):
+        self.__showOnlyMySubscriptions = state
+        self.reset()
+
+    def filterAcceptsRow(self, sourceRow, sourceParent):
+        baseAccept = super(SceneFilterProxyMode, self).filterAcceptsRow(sourceRow, sourceParent)
+        if self.__showOnlyMySubscriptions:
+            subColumnIndex = self.sourceModel().columns.index('subscribers')
+            createdByColumnIndex = self.sourceModel().columns.index('created_by')
+            subscribersIndex = self.sourceModel().index(sourceRow, subColumnIndex, sourceParent)
+            cratedByIndex = self.sourceModel().index(sourceRow, createdByColumnIndex, sourceParent)
+            createdBy = self.sourceModel().data(cratedByIndex)
+            data = self.sourceModel().data(subscribersIndex)
+            data.append(createdBy)
+            return all([self.user in data, baseAccept])
+        else:
+            return baseAccept
+
+class ItemFilterProxyMode(QtGui.QSortFilterProxyModel):
+    def __init__(self, parent=None):
+        super(ItemFilterProxyMode, self).__init__(parent)
+        self.__tags = set()
+        self.__zones = set()
+        self.setFilterCaseSensitivity(QtCore.Qt.CaseInsensitive)
+        self.setSortCaseSensitivity(QtCore.Qt.CaseInsensitive)
+
+    @property
+    def zones(self):
+        return self.__zones
+
+    @property
+    def tags(self):
+        return self.__tags
+
+    def clearTags(self):
+        self.__tags = set()
+        self.reset()
+
+    def addTag(self, tag):
+        self.__tags.add(tag)
+        self.reset()
+
+    def removeTag(self, tag):
+        self.__tags.remove(tag)
+        self.reset()
+
+    def clearZones(self):
+        self.__zones = set()
+        self.reset()
+
+    def addZone(self, zone):
+        self.__zones.add(zone)
+        self.reset()
+
+    def removeZone(self, zone):
+        self.__zones.remove(zone)
+        self.reset()
+
+    def filterAcceptsRow(self, sourceRow, sourceParent):
+        acceptTag = True
+        acceptZone = True
+        contains_filter = True
+        if self.__tags:
+            subColumnIndex = self.sourceModel().columns.index('tags')
+            subscribersIndex = self.sourceModel().index(sourceRow, subColumnIndex, sourceParent)
+            data = set([n for n in self.sourceModel().data(subscribersIndex).split(',') if n])
+            acceptTag = bool(data & self.__tags)
+        if self.__zones:
+            subColumnIndex = self.sourceModel().columns.index('zone')
+            subscribersIndex = self.sourceModel().index(sourceRow, subColumnIndex, sourceParent)
+            acceptZone = self.sourceModel().data(subscribersIndex) in self.__zones
+
+        regEx = self.filterRegExp()
+        if not regEx.isEmpty():
+            patern = regEx.pattern().lower()
+            nameColumnIndex = self.sourceModel().columns.index('name')
+            nameIndex = self.sourceModel().index(sourceRow, nameColumnIndex, sourceParent)
+            filter_text = self.sourceModel().data(nameIndex, self.filterRole()).lower()
+            contains_filter = patern in filter_text
+
+        if all([self.__zones, self.__tags]):
+            return all([acceptTag, acceptZone, contains_filter])
+        elif self.__tags:
+            return all([acceptTag, contains_filter])
+        elif self.__zones:
+            return all([acceptZone, contains_filter])
+        else:
+            return contains_filter
+
+class RadarScenesPanel(QtGui.QDockWidget):
 
     radarSelectionChanged = Signal(dict)
+    radarSceneDeleted = Signal(str)
 
     def __init__(self, parent=None):
-        super(RadarSelectScenePanel, self).__init__(" Radar List", parent)
+        super(RadarScenesPanel, self).__init__(" Scenes", parent)
         self.setAllowedAreas(QtCore.Qt.LeftDockWidgetArea | QtCore.Qt.RightDockWidgetArea)
         containerWidget = QtGui.QWidget(self)
         self.form = radarSelectSceneForm.Ui_Form()
         self.form.setupUi(containerWidget)
         self.setWidget(containerWidget)
         self.setWidget(containerWidget)
-        self.radarDbHandle = RadarMongoDBScene()
+        self.radarDbHandle = MongoSceneHandle()
         self.radarDbHandle.getScenes()
 
-        self.model = QtGui.QSortFilterProxyModel(self)
-        self.model.setSourceModel(ScenesTableModel(self))
-        self.form.tableView_radarScenes.setModel(self.model)
+        self._model = SceneFilterProxyMode(self)
+        self._model.setSourceModel(RadarScenesTableModel(self))
+        self.form.tableView_radarScenes.setModel(self._model)
         self.form.tableView_radarScenes.resizeColumnsToContents()
-        self.model.setFilterKeyColumn(1)
-        self.form.lineEdit_filter.textChanged.connect(self.model.setFilterRegExp)
+        self._model.setFilterKeyColumn(self.sourceModel.columns.index('name'))
+        self.form.lineEdit_filter.textChanged.connect(self._model.setFilterRegExp)
+
+        self.form.tableView_radarScenes.customContextMenuRequested.connect(self.showRMBMenu)
+        self.form.checkBox.toggled.connect(self._model.setShowOnlyMySubscriptions)
 
         # hide columns we are not interested in sorting or displaying
-        for cIndex in self.model.sourceModel().hiddenColumns:
+        for cIndex in self._model.sourceModel().hiddenColumns:
             self.form.tableView_radarScenes.setColumnHidden(cIndex, True)
 
         # connect signals
-        self.form.pushButton_new.clicked.connect(self.model.sourceModel().addNewRadar)
+        self.form.pushButton_new.clicked.connect(self._model.sourceModel().addNewRadar)
         self.form.tableView_radarScenes.doubleClicked.connect(self.radarDoubleClicked)
 
+        self.createActions()
+        self.createMenus()
+
+    @property
+    def sourceModel(self):
+        return self._model.sourceModel()
+
+    def getSourceModel(self):
+        return self._model.sourceModel()
+
+    def createMenus(self):
+        self.rmbMenu = QtGui.QMenu()
+        self.rmbMenu.addAction(self.deleteRadarAction)
+        self.rmbMenu.addAction(self.inviteUserAction)
+
+    def createActions(self):
+        self.deleteRadarAction = QtGui.QAction(self.tr("Delete Scene"), self)
+        self.deleteRadarAction.setStatusTip(self.tr("Delete a Radar Scene"))
+        self.deleteRadarAction.triggered.connect(self.doSceneDelete)
+
+        self.inviteUserAction = QtGui.QAction(self.tr("Invite User"), self)
+        self.inviteUserAction.setStatusTip(self.tr("Invite a user by username to the scene"))
+        self.inviteUserAction.triggered.connect(self.inviteUser)
+
+    def inviteUser(self):
+        radar = self.radarFromSelected()
+        text, state = QtGui.QInputDialog.getText(self, 'Invite User', "User name:")
+        if state:
+            scene = MongoSceneHandle(radar)
+            scene.addSubscription(text)
+
+    def doSceneDelete(self):
+        radar = self.radarFromSelected()
+        result = QtGui.QMessageBox.warning(self, "Delete Radar Scene",
+                        "Are you sure you want to delete {}".format(radar["name"]),
+                        QtGui.QMessageBox.Ok, QtGui.QMessageBox.Cancel)
+        if result == QtGui.QMessageBox.Ok:
+            idx = radar["_id"]
+            self._model.sourceModel().deleteRadar(idx)
+            self.radarSceneDeleted.emit(idx)
+
+    def selectedToSource(self):
+        modelIndex = self.form.tableView_radarScenes.selectionModel().selectedIndexes()[0]
+        sourceIndex = self._model.mapToSource(modelIndex)
+        sourceModel = self._model.sourceModel()
+        return sourceModel, sourceIndex
+
+    def radarFromSelected(self):
+        sourceModel, sourceIndex = self.selectedToSource()
+        radar = sourceModel.radarFromRow(sourceIndex.row())
+        return radar
+
+    def showRMBMenu(self, position):
+        self.rmbMenu.move(self.form.tableView_radarScenes.mapToGlobal(position))
+        self.rmbMenu.show()
+
     def radarDoubleClicked(self, index):
-        modelIndex = self.model.mapToSource(index)
+        modelIndex = self._model.mapToSource(index)
         row = modelIndex.row()
-        data = self.model.sourceModel().radarFromRow(row)
+        data = self._model.sourceModel().radarFromRow(row)
         self.radarSelectionChanged.emit(data)
 
 class FlowLayout(QtGui.QLayout):
     def __init__(self, parent=None, margin=0, spacing=-1):
         super(FlowLayout, self).__init__(parent)
 
-        if parent is not None:
-            self.setMargin(margin)
+        # if parent is not None:
+        #     self.setMargin(margin)
 
         self.setSpacing(spacing)
 
@@ -425,9 +713,12 @@ class FlowLayout(QtGui.QLayout):
             item = self.takeAt(0)
 
     def clear(self):
-        item = self.takeAt(0)
-        while item:
-            item = self.takeAt(0)
+        for i in reversed(range(self.count())):
+            self.itemAt(i).widget().deleteLater()
+        self.itemList = []
+
+    def deleteItemAt(self, index):
+        self.takeAt(index).widget().deleteLater()
 
     def addItem(self, item):
         self.itemList.append(item)
@@ -535,164 +826,255 @@ class TagFieldWidget(QtGui.QWidget):
         if not getattr(tags, "__iter__", ""):
             tags = [tags]
         for tag in tags:
-            if tag.lower() not in self.__tags:
-                self.__tags.append(tag.lower())
-                tagWidget = QtGui.QPushButton(tag.lower())
-                tagWidget.clicked.connect(self.removeTag)
-                self.flowLayout.addWidget(tagWidget)
-                self.tagAdded.emit(tag.lower())
+            if tag:
+                if tag.lower() not in self.__tags:
+                    self.__tags.append(tag.lower())
+                    tagWidget = QtGui.QPushButton(tag.lower())
+                    tagWidget.clicked.connect(self.removeTag)
+                    self.flowLayout.addWidget(tagWidget)
+                    self.tagAdded.emit(tag.lower())
+        self.le_newTag.setText("")
+
 
     def removeTag(self):
         tag = self.sender().text()
         index = self.__tags.index(tag)
-        self.flowLayout.takeAt(index)
-        self.__tags.remove(index)
+        self.flowLayout.deleteItemAt(index)
+        self.__tags.pop(index)
         self.tagRemoved.emit(tag)
 
 
-class RadarFilterListPanel(QtGui.QDockWidget):
+class RadarListPanel(QtGui.QDockWidget):
 
-    radarListSelectionChanged = Signal(str)
+    radarListSelectionChanged = Signal(RadarGraphicsScene, str)
 
     def __init__(self, parent=None):
-        super(RadarFilterListPanel, self).__init__(" Radar List", parent)
+        super(RadarListPanel, self).__init__(" Radar List", parent)
         self.setAllowedAreas(QtCore.Qt.LeftDockWidgetArea | QtCore.Qt.RightDockWidgetArea)
         containerWidget = QtGui.QWidget(self)
         self.form = radarListForm.Ui_Form()
         self.form.setupUi(containerWidget)
         self.setWidget(containerWidget)
         self.form.itemTableView.clicked.connect(self.emitSelectionChange)
+        self.form.itemTableView.setSortingEnabled(True)
+        self.form.pushButton_filterTags.clicked.connect(self.showFiltersMenu)
+        self.form.pushButton_filterZone.clicked.connect(self.showZonesMenu)
+        self._scene = None
 
-        self.proxyModel = QtGui.QSortFilterProxyModel(self)
+    @property
+    def scene(self):
+        return self._scene
 
-        self.model = None
+    def setFilterTag(self):
+        cb = self.sender()
+        if cb.isChecked():
+            self._scene.proxyModel.addTag(cb.text())
+        else:
+            self._scene.proxyModel.removeTag(cb.text())
 
-    def clear(self):
-        self.model = None
-        self.proxyModel = QtGui.QSortFilterProxyModel(self)
+    def setFilterZone(self):
+        cb = self.sender()
+        if cb.isChecked():
+            self._scene.proxyModel.addZone(cb.text())
+        else:
+            self._scene.proxyModel.removeZone(cb.text())
 
-    def setModel(self, model):
-        self.model = model
-        self.proxyModel.setSourceModel(self.model)
-        self.form.filter_lineEdit.textChanged.connect(self.proxyModel.setFilterRegExp)
-        self.proxyModel.setFilterKeyColumn(self.model.columns.index("name"))
-        self.form.itemTableView.setModel(self.proxyModel)
-        for c in self.model.hiddenColumns:
-            self.form.itemTableView.setColumnHidden(c, True)
-        self.form.itemTableView.horizontalHeader().stretchLastSection()
+    def showZonesMenu(self):
+        menu = QtGui.QMenu("menu")
+        zones = ['P1', 'P2', 'P3', 'P4']
+        action = QtGui.QAction('clear', menu)
+        menu.addAction(action)
+        action.triggered.connect(self._scene.proxyModel.clearZones)
+        for i in zones:
+            action = QtGui.QAction(i, menu, checkable=True)
+            menu.addAction(action)
+            if i in self._scene.proxyModel.zones:
+                action.setChecked(True)
+            action.triggered.connect(self.setFilterZone)
+        menu.move(self.mapToGlobal(self.form.pushButton_filterTags.pos()))
+        menu.exec_()
+
+    def showFiltersMenu(self):
+        menu = QtGui.QMenu("menu")
+        sceneTags = self._scene.mongoSceneHandle.allSceneTags()
+        action = QtGui.QAction('clear', menu)
+        menu.addAction(action)
+        action.triggered.connect(self._scene.proxyModel.clearTags)
+        for i in sceneTags:
+            action = QtGui.QAction(i, menu, checkable=True)
+            menu.addAction(action)
+            if i in self._scene.proxyModel.tags:
+                action.setChecked(True)
+            action.triggered.connect(self.setFilterTag)
+        menu.move(self.mapToGlobal(self.form.pushButton_filterTags.pos()))
+        menu.exec_()
+
+    def setGraphicsScene(self, scene):
+        self._scene = scene
+        self.form.itemTableView.setModel(self._scene.proxyModel)
+        for col in self._scene.sourceModel.hiddenColumns:
+            self.form.itemTableView.setColumnHidden(col, True)
 
 
-    def updateSelectedFromRadarItem(self, radarItem):
+    def getGraphicsScene(self):
+        return self._scene
+
+    def selectRadarItem(self, scene, radarItem):
         """
         Called when a radarItem is selected in the graphics scene.  Selects the row and scrolls to it in the view
         :param radarItem: RadarGraphicsItem
         :return: None
         """
-        log.debug("Update List From Selected Item in Scene")
-        # row = self.model.rowFromId(radarItem.id())
-        # self.form.itemTableView.selectRow(row)
-        # self.form.itemTableView.scrollTo(self.model.index(row, 0), QtGui.QAbstractItemView.PositionAtTop)
+        if self.scene is scene:
+            index = self.scene.radarItemToProxyIndex(radarItem)
+            if index.isValid():
+                log.debug("Update List From Selected Item in Scene")
+                self.form.itemTableView.scrollTo(index, QtGui.QAbstractItemView.PositionAtTop)
+                self.form.itemTableView.selectRow(index.row())
+        else:
+            raise LookupError()
 
     def emitSelectionChange(self):
-        log.debug("list view selection changed")
-        modelIndex = self.form.itemTableView.selectionModel().selectedIndexes()[0]
-        row = self.proxyModel.mapToSource(modelIndex).row()
-        idx = self.model.rawDataFromRow(row)["_id"]
-        self.radarListSelectionChanged.emit(str(idx))
+        if self.scene:
+            log.debug("list view selection changed")
+
+            modelIndex = self.form.itemTableView.selectionModel().selectedIndexes()[0]
+            row = self.scene.proxyModel.mapToSource(modelIndex).row()
+            idx = self.scene.sourceModel.rawDataFromRow(row)["_id"]
+            self.radarListSelectionChanged.emit(self.scene, str(idx))
 
 
-class RadarItemAttributeEditor(QtGui.QDockWidget):
+class RadarAttributeEditor(QtGui.QDockWidget):
     def __init__(self, parent=None):
-        super(RadarItemAttributeEditor, self).__init__(" Radar Attribute Editor", parent)
+        super(RadarAttributeEditor, self).__init__(" Radar Attribute Editor", parent)
         self.setAllowedAreas(QtCore.Qt.LeftDockWidgetArea | QtCore.Qt.RightDockWidgetArea)
-        self.model = None
         self.radarItem = None
         self.form = radarAttributeEditorForm.Ui_Form()
         containerWidget = QtGui.QWidget(self)
         self.form.setupUi(containerWidget)
         self.setWidget(containerWidget)
-        self.record = {}
-        self.row = None
-        self.rowIndexes = {}
         self.radarItem = None
+        self.rowIndexes = {}
         self.tagWidget = TagFieldWidget(self)
         self.form.mainLayout.addWidget(self.tagWidget)
         self.connectSignals()
+        self._scene = None
+        self.simpleColPicker = SimpleColourPicker(self)
+        self.simpleColPicker.setColor.connect(self.quickSetColour)
+        self.form.mainLayout.insertWidget(5, self.simpleColPicker)
+
+    @property
+    def scene(self):
+        return self._scene
+
+    def setGraphicsScene(self, scene):
+        self._scene = scene
+        self.clearData()
+
+    def getGraphicsScene(self):
+        return self._scene
 
     def connectSignals(self):
         self.form.name_lineEdit.textChanged.connect(self.writeData)
         self.form.description_plainTextEdit.textChanged.connect(self.writeData)
         self.form.comments_plainTextEdit.textChanged.connect(self.writeData)
         self.form.pushButton_postComment.clicked.connect(self.postComment)
-        self.tagWidget.tagAdded.connect(self.postTag)
+        self.tagWidget.tagAdded.connect(self.setTags)
+        self.tagWidget.tagRemoved.connect(self.removeTag)
         self.form.pickColour_pushButton.clicked.connect(self.pickColour)
+        self.form.link_lineEdit.textChanged.connect(self.writeData)
+
+    def quickSetColour(self, colour):
+        role = QtCore.Qt.EditRole
+        if all([self.scene, self.radarItem]):
+            if colour.isValid():
+                self.scene.sourceModel.setData(self.rowIndexes["colour"], colour, role)
 
     def pickColour(self):
-        role = QtCore.Qt.EditRole
-        rawCol = self.record["colour"]
-        qCol = QtGui.QColor(rawCol[0], rawCol[1], rawCol[2])
-        colour = QtGui.QColorDialog.getColor(qCol, self)
-        if colour.isValid():
-            self.model.setData(self.rowIndexes["colour"], colour, role)
-
-    def setModel(self, model):
-        self.model = model
-        self.clearData()
-
+        if all([self.scene, self.radarItem]):
+            role = QtCore.Qt.EditRole
+            rawCol = self.radarItem.record["colour"]
+            qCol = QtGui.QColor(rawCol[0], rawCol[1], rawCol[2])
+            colour = QtGui.QColorDialog.getColor(qCol, self)
+            if colour.isValid():
+                self.scene.sourceModel.setData(self.rowIndexes["colour"], colour, role)
 
     def postComment(self):
-        role = QtCore.Qt.EditRole
-        comment = self.form.comments_plainTextEdit.toPlainText()
-        self.model.setData(self.rowIndexes["comments"], comment, role)
-        self.form.comments_plainTextEdit.clear()
-        self.setRadarItem(self.radarItem)
+        if all([self.scene, self.radarItem]):
+            role = QtCore.Qt.EditRole
+            comment = self.form.comments_plainTextEdit.toPlainText()
+            self.scene.sourceModel.setData(self.rowIndexes["comments"], comment, role)
+            self.scene.updateItemRecord(self.radarItem)
+            self.form.comments_plainTextEdit.clear()
+            self.setRadarItem(self.radarItem)
 
+    def setTags(self, tag):
+        if all([self.scene, self.radarItem]):
+            role = QtCore.Qt.EditRole
+            currentTags = [n for n in self.rowIndexes["tags"].data(QtCore.Qt.DisplayRole).split(",") if n]
+            if tag.lower() not in currentTags:
+                currentTags.append(tag.lower())
+                self.scene.sourceModel.setData(self.rowIndexes["tags"], currentTags, role)
 
-    def postTag(self, tag):
-        role = QtCore.Qt.EditRole
-        self.model.setData(self.rowIndexes["tags"], tag, role)
+    def removeTag(self, tag):
+        if all([self.scene, self.radarItem]):
+            role = QtCore.Qt.EditRole
+            currentTags = [n for n in self.rowIndexes["tags"].data(QtCore.Qt.DisplayRole).split(",") if n]
+            if tag.lower() in currentTags:
+                currentTags.remove(tag.lower())
+                self.scene.sourceModel.setData(self.rowIndexes["tags"], currentTags, role)
+
 
     def setRadarItem(self, radarItem):
-        self.record = {}
-        if radarItem and self.model:
-            self.radarItem = radarItem
-            self.row = self.model.rowFromId(self.radarItem.id())
-            self.rowIndexes = self.model.rowModelIndexFromId(self.radarItem.id())
-            self.record = self.model.rawDataFromRow(self.row)
 
-        if self.record:
-            self.form.name_lineEdit.setText(self.record["name"])
-            self.form.description_plainTextEdit.setPlainText(self.record["description"])
+        if all([radarItem]):
+            self.radarItem = radarItem
+            self.rowIndexes = self.scene.sourceModel.rowModelIndexFromId(self.radarItem.id())
+
+            self.form.name_lineEdit.setText(self.radarItem.record["name"])
+            self.form.description_plainTextEdit.setPlainText(self.radarItem.record["description"])
             story = ""
-            for i in reversed(range(len(self.record["comments"]))):
-                cHist = self.record["comments"][i]
+            for i in reversed(range(len(self.radarItem.record["comments"]))):
+                cHist = self.radarItem.record["comments"][i]
                 post = "-"*10
                 post+="\ncommnet by : {0}  date : {1}\n\n".format(cHist["user"], cHist["date"])
                 post+= cHist["text"]
                 story+= post + "\n"
             self.form.commentHistory_plainTextEdit.setPlainText(story)
 
-            self.form.createdBy_lineEdit.setText(self.record["created_by"])
-            self.form.createdOn_lineEdit.setText(self.record["created_on"].strftime("%Y-%m-%d:%X"))
+            self.form.createdBy_lineEdit.setText(self.radarItem.record["created_by"])
+            self.form.createdOn_lineEdit.setText(self.radarItem.record["created_on"].strftime("%Y-%m-%d:%X"))
+
+            self.form.link_lineEdit.setText(self.radarItem.record["link"])
 
             self.tagWidget.clearTags()
-            self.tagWidget.setTags(self.record["tags"])
+            self.tagWidget.setTags(self.radarItem.record["tags"])
+        else:
+            self.tagWidget.clearTags()
+            self.form.name_lineEdit.setText("")
+            self.form.description_plainTextEdit.setPlainText("")
+            self.form.commentHistory_plainTextEdit.setPlainText("")
+            self.form.createdBy_lineEdit.setText("")
+            self.form.createdOn_lineEdit.setText("")
+            self.form.link_lineEdit.setText("")
 
 
     def writeData(self):
-        role = QtCore.Qt.EditRole
-        sender = self.sender()
-        if self.rowIndexes:
-            if sender is self.form.name_lineEdit:
-                self.model.setData(self.rowIndexes["name"], self.form.name_lineEdit.text(), role)
-            elif sender is self.form.description_plainTextEdit:
-                self.model.setData(self.rowIndexes["description"], self.form.description_plainTextEdit.toPlainText(), role)
+        if self.scene:
+            role = QtCore.Qt.EditRole
+            sender = self.sender()
+            model = self.scene.sourceModel
+            if self.radarItem:
+                if sender is self.form.name_lineEdit:
+                    model.setData(self.rowIndexes["name"], self.form.name_lineEdit.text(), role)
+                elif sender is self.form.description_plainTextEdit:
+                    model.setData(self.rowIndexes["description"], self.form.description_plainTextEdit.toPlainText(), role)
+                elif sender is self.form.link_lineEdit:
+                    model.setData(self.rowIndexes["link"], self.form.link_lineEdit.text(), role)
 
     def clearData(self):
         self.radarItem = None
-        self.record = {}
         self.rowIndexes = {}
-        self.row = None
         self.setRadarItem(None)
 
 
@@ -720,15 +1102,16 @@ class MainWindow(QtGui.QMainWindow):
         self.setCentralWidget(self.centralTab)
         self.centralTab.tabContainer.currentChanged.connect(self.connectModel)
 
-        self.radarSelectSceneView = RadarSelectScenePanel(self)
+        self.radarSelectSceneView = RadarScenesPanel(self)
+        self.radarSelectSceneView.getSourceModel().radarSceneRenamed.connect(self.centralTab.updateSceneName)
         self.radarSelectSceneView.radarSelectionChanged.connect(self.openScene)
         self.addDockWidget(QtCore.Qt.LeftDockWidgetArea, self.radarSelectSceneView)
 
-        self.radarListView = RadarFilterListPanel(self)
-        self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self.radarListView)
+        self.itemListPanel = RadarListPanel(self)
+        self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self.itemListPanel)
 
-        self.radarItemAttributeEditor = RadarItemAttributeEditor(self)
-        self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self.radarItemAttributeEditor)
+        self.attributeEditor = RadarAttributeEditor(self)
+        self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self.attributeEditor)
 
         self.setMinimumSize(800, 1024)
 
@@ -755,11 +1138,6 @@ class MainWindow(QtGui.QMainWindow):
 
 
     def createActions(self):
-
-        self.newSceneAct = QtGui.QAction(self.tr("N&ew"), self)
-        self.newSceneAct.setShortcut(self.tr("Ctrl+N"))
-        self.newSceneAct.setStatusTip(self.tr("New Radar Scene"))
-        self.newSceneAct.triggered.connect(self.newScene)
 
         self.saveSceneAct = QtGui.QAction(self.tr("S&ave"), self)
         self.saveSceneAct.setShortcut(self.tr("Ctrl+S"))
@@ -805,45 +1183,6 @@ class MainWindow(QtGui.QMainWindow):
         self.setStatusBar(sb)
         self.statusBar().showMessage(self.tr("Ready"))
 
-    def setSelectedRadarItem(self, *args):
-        print args
-
-    def selectRadarItemByID(self, idx):
-        """
-        Handles selecting of radar items in the scene by the item id from mongoDB.  Other views can pass the id
-        via a signal.  This slot can then handle the the selection of the items in the scene from the id
-        :param idx: str
-        :return: None
-        """
-        # Grab the View from the current Tab and thus dig down into the scene graph.
-        # The the method to extract the radarItem.
-        log.debug("Select Radar Item by ID")
-        radarGraphicsView = self.centralTab.tabContainer.currentWidget()
-        item = radarGraphicsView.scene.itemFromID(idx)
-
-        log.debug("Found GraphicsItem in Radar : {0}".format(item))
-
-        if item:
-            # It was difficult to find out the best way to select items in the scene.  This is like drawing
-            # a box selection on the viewport and the contained items are selected.
-            radarGraphicsView.scene.clearSelection()
-            painterPath = QtGui.QPainterPath()
-            painterPath.addRect(item.boundingRect())
-            painterPath.translate(item.scenePos())
-            radarGraphicsView.scene.setSelectionArea(painterPath, QtGui.QTransform())
-            self.updateRadarAttributeEditor(item)
-
-
-    def updateRadarAttributeEditor(self, radarItem):
-        """
-        :param radarItem: RadarGraphicsItem
-        :return:
-        """
-        log.debug("update radar attribute editor on : {0}".format(radarItem.id()))
-        self.radarItemAttributeEditor.setRadarItem(radarItem)
-        self.radarListView.updateSelectedFromRadarItem(radarItem)
-
-
     def connectModel(self, tabIndex):
         """
         When a new tab is selected we need to push the correct model onto the various editors
@@ -852,8 +1191,9 @@ class MainWindow(QtGui.QMainWindow):
         """
         radarGraphicsView = self.centralTab.tabContainer.widget(tabIndex)
         if radarGraphicsView:
-            self.radarListView.setModel(radarGraphicsView.scene.tableModel)
-            self.radarItemAttributeEditor.setModel(radarGraphicsView.scene.tableModel)
+            radarGraphicsView.scene.setActive()
+        else:
+            pass
 
     def saveScene(self):
         log.debug("Save")
@@ -867,31 +1207,14 @@ class MainWindow(QtGui.QMainWindow):
             return
 
         log.debug("Open : {0}".format(sceneRecord))
-        dbScene = RadarMongoDBScene(sceneRecord)
+        mongoSceneHandle = MongoSceneHandle(sceneRecord)
 
         scene = RadarGraphicsScene(-400,-300,800,600, self)
-        scene.setRadarMogoDbScene(dbScene)
+        scene.initScene(mongoSceneHandle, self.attributeEditor, self.itemListPanel)
         radar = RadarGraphicsView(scene, self)
-        self.radarItemAttributeEditor.clearData()
-        self.radarListView.clear()
+
         self.centralTab.addRadarGraphicsView(sceneRecord["name"], radar)
-        scene.radarItemClicked.connect(self.updateRadarAttributeEditor)
-        scene.radarItemAdded.connect(self.updateRadarAttributeEditor)
-        self.radarListView.radarListSelectionChanged.connect(self.selectRadarItemByID)
+        # scene.radarItemClicked.connect(self.updateRadarAttributeEditor)
 
         lastIndex = self.centralTab.tabContainer.count()-1
         self.centralTab.tabContainer.setCurrentIndex(lastIndex)
-
-    def newScene(self):
-        """
-        Create a new radar scene and adds it to the central tab widget
-        :return: None
-        """
-        log.debug("New")
-        scene = RadarGraphicsScene(-400,-300,800,600, parent=self)
-        radar = RadarGraphicsView(scene, self)
-        self.centralTab.addRadarGraphicsView("Untitled", radar)
-        scene.radarItemClicked.connect(self.updateRadarAttributeEditor)
-        scene.radarItemAdded.connect(self.updateRadarAttributeEditor)
-        self.radarListView.radarListSelectionChanged.connect(self.selectRadarItemByID)
-

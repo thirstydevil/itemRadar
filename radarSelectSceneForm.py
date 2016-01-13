@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 
-# Form implementation generated from reading ui file 'D:\__CODE\itemRadar\resources\ui\radarSelectSceneForm.ui'
+# Form implementation generated from reading ui file 'C:\Users\David\PycharmProjects\pythonTestBed\itemRadar\resources\ui\radarSelectSceneForm.ui'
 #
-# Created: Fri Jan 08 17:49:39 2016
-#      by: pyside-uic 0.2.15 running on PySide 1.2.2
+# Created: Wed Jan 13 22:52:44 2016
+#      by: pyside-uic 0.2.15 running on PySide 1.2.4
 #
 # WARNING! All changes made in this file will be lost!
 
@@ -34,6 +34,8 @@ class Ui_Form(object):
         self.horizontalLayout.addWidget(self.lineEdit_filter)
         self.verticalLayout.addLayout(self.horizontalLayout)
         self.tableView_radarScenes = QtGui.QTableView(Form)
+        self.tableView_radarScenes.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.tableView_radarScenes.setEditTriggers(QtGui.QAbstractItemView.EditKeyPressed)
         self.tableView_radarScenes.setSelectionMode(QtGui.QAbstractItemView.SingleSelection)
         self.tableView_radarScenes.setSelectionBehavior(QtGui.QAbstractItemView.SelectRows)
         self.tableView_radarScenes.setShowGrid(False)

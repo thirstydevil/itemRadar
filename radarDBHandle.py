@@ -4,6 +4,7 @@ from PySide import QtCore, QtGui
 from PySide.QtCore import Signal
 from pymongo import MongoClient
 from pprint import pformat, pprint
+import math
 import datetime
 import getpass
 
@@ -18,10 +19,12 @@ def getClient():
         _g_client = MongoClient('localhost', 27017)
     return _g_client
 
+
 def getItemRadarDb():
     client = getClient()
     db = client[_g_DB]
     return db
+
 
 def init():
     """
@@ -34,35 +37,38 @@ def init():
     if "items" not in db.collection_names():
         db.create_collection("items")
 
+
 init()
 
-class RadarMongoDBScene(QtCore.QObject):
+
+class MongoSceneHandle(QtCore.QObject):
 
     item_record_template = {
         "name": "New",
-        "pos": [0,0],
+        "pos": [0, 0],
+        "distance": 0.0,
         "colour": [34, 255, 17],
         "scene_id": None,
         "link": "",
         "description": "",
-        "comments" : [],
-        "tags" : [],
-        "locked" : False,
-        "created_on" : datetime.datetime.now(),
-        "created_by" : getpass.getuser()
+        "comments": [],
+        "tags": [],
+        "locked": False,
+        "created_on": datetime.datetime.now(),
+        "created_by": getpass.getuser()
     }
 
     scene_template = {
         "name": "Untitled",
         "description": "",
-        "locked" : False,
-        "created_on" : datetime.datetime.now(),
-        "created_by" : getpass.getuser(),
-        "subscribers" : []
+        "locked_by": "",
+        "created_on": datetime.datetime.now(),
+        "created_by": getpass.getuser(),
+        "subscribers": []
     }
 
     def __init__(self, sceneRecord=None):
-        super(RadarMongoDBScene, self).__init__()
+        super(MongoSceneHandle, self).__init__()
         self._sceneRecord = sceneRecord
         self.db = getItemRadarDb()
 
@@ -71,9 +77,15 @@ class RadarMongoDBScene(QtCore.QObject):
 
     def __updateItem__(self, id, data):
         collection = self.db.get_collection("items")
-        collection.find_one_and_update({"_id":id}, {"$set": data})
+        collection.find_one_and_update({"_id": id}, {"$set": data})
         return self.findItem(id)
 
+    def delete(self):
+        if self.isValidScene():
+            for i in self.items():
+                self.db.items.remove(i)
+            self.db.scenes.remove(self._sceneRecord)
+            self._sceneRecord = None
 
     @classmethod
     def findSceneFromId(cls, id):
@@ -102,7 +114,7 @@ class RadarMongoDBScene(QtCore.QObject):
 
     def isValidScene(self):
         if self._sceneRecord:
-            if self.db.scenes.find_one({"_id":self.sceneId()}):
+            if self.db.scenes.find_one({"_id": self.sceneId()}):
                 return True
         return False
 
@@ -117,9 +129,36 @@ class RadarMongoDBScene(QtCore.QObject):
     def renameScene(self, name):
         db = getItemRadarDb()
         collection = db.get_collection("scenes")
-        collection.find_one_and_update({"_id":self.sceneId()}, {"$set": {"name":name}})
+        collection.find_one_and_update({"_id": self.sceneId()}, {"$set": {"name": name}})
+        record = self.findSceneFromId(self.sceneId())
+        return record
 
-    def newItem(self):
+    def addSubscription(self, user):
+        db = getItemRadarDb()
+        print user
+        subs = self._sceneRecord['subscribers'][:]
+        print subs
+        collection = db.get_collection("scenes")
+        if user not in subs:
+            subs.append(user)
+        collection.find_one_and_update({"_id": self.sceneId()},
+                                       {"$set": {'subscribers': subs}})
+        record = self.findSceneFromId(self.sceneId())
+        return record
+
+    def removeSubscription(self, user):
+        pass
+
+    def setOwnership(self, user):
+        db = getItemRadarDb()
+        collection = db.get_collection("scenes")
+        self._sceneRecord['created_by'] = str(user)
+        collection.find_one_and_update({"_id": self.sceneId()},
+                                       {"$set": {'created_by': self._sceneRecord['created_by']}})
+        record = self.findSceneFromId(self.sceneId())
+        return record
+
+    def newRadarItem(self):
         if self._sceneRecord:
             newRecord = self.item_record_template.copy()
             newRecord["scene_id"] = self.sceneId()
@@ -131,11 +170,12 @@ class RadarMongoDBScene(QtCore.QObject):
     def updateItemName(self, itemId, name):
         itemRecord = self.findItem(itemId)
         itemRecord["name"] = name
-        self.__updateItem__(itemId, itemRecord)
+        return self.__updateItem__(itemId, itemRecord)
 
     def updatePosition(self, itemId, x, y):
         itemRecord = self.findItem(itemId)
         itemRecord["pos"] = [x, y]
+        itemRecord["distance"] = math.fabs(math.sqrt(x*x + y*y))
         return self.__updateItem__(itemId, itemRecord)
 
     def postComment(self, itemId, text):
@@ -166,6 +206,12 @@ class RadarMongoDBScene(QtCore.QObject):
             return self.__updateItem__(itemId, itemRecord)
         return itemRecord
 
+    def allSceneTags(self):
+        tags = set()
+        for i in self.items():
+            tags = tags.union(set(i['tags']))
+        return tags
+
     def clearTags(self, itemId):
         itemRecord = self.findItem(itemId)
         itemRecord["tags"] = []
@@ -189,40 +235,64 @@ class RadarMongoDBScene(QtCore.QObject):
         return self.__updateItem__(itemId, itemRecord)
 
     def setItemLock(self, itemId, state):
+        if state:
+            value = getpass.getuser()
+        else:
+            value = ""
         itemRecord = self.findItem(itemId)
-        itemRecord["locked"] = True
-        self.__updateItem__(itemId, itemRecord)
+        itemRecord["locked_by"] = value
+        return self.__updateItem__(itemId, itemRecord)
 
     def findItem(self, itemId):
         # note to self.  should be a ObjectId not a str
         return self.db.items.find_one({"_id": itemId, "scene_id": self.sceneId()})
 
-class ScenesTableModel(QtCore.QAbstractTableModel):
 
-    columns = RadarMongoDBScene.scene_template.keys()
+class RadarScenesTableModel(QtCore.QAbstractTableModel):
+    columns = MongoSceneHandle.scene_template.keys()
+    radarSceneRenamed = Signal(str, str)
 
     def __init__(self, parent=None):
-        super(ScenesTableModel, self).__init__(parent)
+        super(RadarScenesTableModel, self).__init__(parent)
         self.datatable = []
         self.sync()
         self.userOnly = False
-        self.hiddenColumns = [self.columns.index(k) for k in self.columns if k not in ["name", "created_on"]]
+        self.hiddenColumns = [self.columns.index(k) for k in self.columns if k not in ["name"]]
+
+    def flags(self, index):
+        defaultFlags = super(RadarScenesTableModel, self).flags(index)
+        if index.isValid():
+            colName = self.columns[index.column()]
+            if colName == "name":
+                return QtCore.Qt.ItemIsEditable | defaultFlags
+        return defaultFlags
 
     def headerData(self, col, orientation, role):
         if orientation == QtCore.Qt.Horizontal and role == QtCore.Qt.DisplayRole:
             return self.columns[col]
 
     def addNewRadar(self):
-        scene = RadarMongoDBScene.createNewScene()
+        scene = MongoSceneHandle.createNewScene()
         self.datatable.append(scene._sceneRecord)
         self.layoutChanged.emit()
 
     def radarFromRow(self, row):
         return self.datatable[row]
 
+    def radItemFromId(self, idx):
+        for r in self.datatable:
+            if r["_id"] == idx:
+                return r
+
     def sync(self):
-        self.datatable = [r._sceneRecord for r in RadarMongoDBScene.getScenes()]
+        self.datatable = [r._sceneRecord for r in MongoSceneHandle.getScenes()]
         self.layoutChanged.emit()
+
+    def deleteRadar(self, idx):
+        radar = self.radItemFromId(idx)
+        dbRadar = MongoSceneHandle(radar)
+        dbRadar.delete()
+        self.sync()
 
     def columnCount(self, parent=QtCore.QModelIndex()):
         return len(self.columns)
@@ -243,24 +313,50 @@ class ScenesTableModel(QtCore.QAbstractTableModel):
         else:
             return None
 
+    def setData(self, index, value, role=QtCore.Qt.EditRole):
+        if role == QtCore.Qt.EditRole:
+            row = index.row()
+            column = index.column()
+            col_name = self.columns[column]
+            idx = self.datatable[row]["_id"]
+            dbScene = MongoSceneHandle(self.datatable[row])
+            newData = None
+            if col_name == "name":
+                if value:
+                    newData = dbScene.renameScene(value)
+                    self.radarSceneRenamed.emit(str(idx), value)
+            if newData:
+                self.datatable[row] = newData
+                self.dataChanged.emit(index, index)
+            return True
+        return False
 
-class ItemsTableModel(QtCore.QAbstractTableModel):
 
-    columns = RadarMongoDBScene.scene_template.keys()
+
+class RadarItemsTableModel(QtCore.QAbstractTableModel):
+    columns = MongoSceneHandle.scene_template.keys()
 
     updateGraphicsItemColour = Signal(str, QtGui.QColor)
 
     def __init__(self, radarMongoScene, parent=None):
-        super(ItemsTableModel, self).__init__(parent)
-        assert isinstance(radarMongoScene, RadarMongoDBScene)
+        super(RadarItemsTableModel, self).__init__(parent)
+        assert isinstance(radarMongoScene, MongoSceneHandle)
         self.radarMongoScene = radarMongoScene
         self.datatable = []
-        self.columns = RadarMongoDBScene.item_record_template.keys()
-        self.hiddenColumns = [self.columns.index(k) for k in self.columns if k not in ["name"]]
+        self.columns = MongoSceneHandle.item_record_template.keys() + ['zone']
+        self.hiddenColumns = [self.columns.index(k) for k in self.columns if k not in ["name", "distance"]]
         self.sync()
 
         self.colourBrush = QtGui.QBrush(QtGui.QColor(255, 0, 0))
         self.colourBrush.setStyle(QtCore.Qt.SolidPattern)
+
+    def flags(self, index):
+        defaultFlags = super(RadarItemsTableModel, self).flags(index)
+        if index.isValid():
+            colName = self.columns[index.column()]
+            if colName == "name":
+                return QtCore.Qt.ItemIsEditable | defaultFlags
+        return defaultFlags
 
     def headerData(self, col, orientation, role):
         if orientation == QtCore.Qt.Horizontal and role == QtCore.Qt.DisplayRole:
@@ -289,7 +385,7 @@ class ItemsTableModel(QtCore.QAbstractTableModel):
         return self.rawDataFromRow(row)
 
     def addNewRadarItem(self):
-        self.datatable.append(self.radarMongoScene.newItem())
+        self.datatable.append(self.radarMongoScene.newRadarItem())
         self.layoutChanged.emit()
         return self.datatable[-1]
 
@@ -309,12 +405,34 @@ class ItemsTableModel(QtCore.QAbstractTableModel):
 
         row = self.datatable[index.row()]
         column_key = self.columns[index.column()]
-        data = row[column_key]
+        data = None
+        if column_key in row:
+            data = row[column_key]
+        elif column_key == 'zone':
+            data = row['pos']
 
         if role == QtCore.Qt.DisplayRole:
 
             if column_key == "created_on":
                 return data.strftime("%Y-%m-%d:%X")
+            elif column_key == "tags":
+                return ",".join([str(n) for n in data if n])
+            elif column_key == "pos":
+                return ",".join([str(n) for n in data if n])
+            elif column_key == "distance":
+                return data
+            elif column_key == 'zone':
+                # Zones are calculated by the co-ordinate system and note stored in the data
+                x, y = data
+                if x < 0 and y < 0:
+                    return 'P1'
+                if x > 0 and y < 0:
+                    return 'P2'
+                if x < 0 and y > 0:
+                    return 'P3'
+                if x > 0 and y > 0:
+                    return 'P4'
+                return 'X'
             return row[column_key]
 
         if role == QtCore.Qt.BackgroundRole:
@@ -323,7 +441,7 @@ class ItemsTableModel(QtCore.QAbstractTableModel):
         else:
             return None
 
-    def setData(self, index, value, role = QtCore.Qt.EditRole):
+    def setData(self, index, value, role=QtCore.Qt.EditRole):
         if role == QtCore.Qt.EditRole:
 
             row = index.row()
@@ -332,35 +450,31 @@ class ItemsTableModel(QtCore.QAbstractTableModel):
             idx = self.datatable[row]["_id"]
             newData = None
             if col_name == "name":
-                newData = self.radarMongoScene.updateItemName(idx, value)
+                if value:
+                    newData = self.radarMongoScene.updateItemName(idx, value)
+            elif col_name == "description":
+                newData = self.radarMongoScene.updateDescription(idx, value)
             elif col_name == "comments":
                 newData = self.radarMongoScene.postComment(idx, value)
+            elif col_name == "link":
+                newData = self.radarMongoScene.updateLink(idx, value)
             elif col_name == "tags":
-                if getattr(value, "__iter__", ""):
-                    newData = self.radarMongoScene.setTags(idx, value)
-                else:
-                    newData = self.radarMongoScene.addTag(idx, value)
-            elif col_name == "tags":
-                newData = self.radarMongoScene.addTag(idx, value)
+                newData = self.radarMongoScene.setTags(idx, value)
             elif col_name == "colour":
                 newData = self.radarMongoScene.updateColour(idx, value)
                 self.updateGraphicsItemColour.emit(str(idx), value)
-
+            elif col_name == "pos":
+                newData = self.radarMongoScene.updatePosition(idx, value[0], value[1])
             if newData:
                 self.datatable[row] = newData
                 self.dataChanged.emit(index, index)
-
 
             return True
         return False
 
 
 if __name__ == "__main__":
-    scene = RadarMongoDBScene.createNewScene()
-    scene.renameScene("Demo Scene 01")
-    for i in range(5):
-        scene.newItem()
-    scene.items()
-    item = scene.items()[0]
-    scene.postComment(item["_id"], "I hope this works")
+    scene = MongoSceneHandle.createNewScene()
+    scene.setOwnership('mrutter')
+    scene.renameScene('rutters')
 
