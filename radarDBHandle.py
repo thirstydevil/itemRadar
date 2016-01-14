@@ -135,9 +135,7 @@ class MongoSceneHandle(QtCore.QObject):
 
     def addSubscription(self, user):
         db = getItemRadarDb()
-        print user
         subs = self._sceneRecord['subscribers'][:]
-        print subs
         collection = db.get_collection("scenes")
         if user not in subs:
             subs.append(user)

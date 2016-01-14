@@ -17,28 +17,6 @@ g_ROOT_PATH = os.path.dirname(__file__)
 g_RESOURCE_PATH = os.path.join(g_ROOT_PATH, "resources")
 g_IMAGES_PATH = os.path.join(g_RESOURCE_PATH, "images")
 
-class FilterTagsWidget(QtGui.QDialog):
-    def __init__(self, parent):
-        super(FilterTagsWidget, self).__init__(parent)
-        self._scene = None
-        self.flowLayout = FlowLayout(self)
-        self.setLayout(self.flowLayout)
-        self.__tags = []
-
-    def tagsEdited(self, *args):
-        print 'HERE'
-
-    def setScene(self, scene):
-        if scene:
-            self._scene = scene
-            self.__tags = []
-            self.flowLayout.clear()
-            self.__tags = self._scene.mongoSceneHandle.allSceneTags()
-            for tag in self.__tags:
-                cb = QtGui.QCheckBox(tag)
-                self.flowLayout.addWidget(cb)
-                cb.toggled.connect(self.tagsEdited)
-
 
 class RadarGraphicsItem(QtGui.QGraphicsItem):
     """
@@ -453,6 +431,9 @@ class SimpleColourPicker(QtGui.QWidget):
 
 
 class CentralWidget(QtGui.QWidget):
+
+    tabClosed = Signal(int)
+
     def __init__(self, parent=None):
         super(CentralWidget, self).__init__(parent)
         self.mainLayout = QtGui.QVBoxLayout(self)
@@ -471,6 +452,12 @@ class CentralWidget(QtGui.QWidget):
     def closeTab(self, tabIndex):
         log.debug("Close : {0}".format(tabIndex))
         self.tabContainer.removeTab(tabIndex)
+        widget = self.tabContainer.widget(tabIndex)
+        try:
+            widget.close()
+            widget.deletLater()
+        except:pass
+        self.tabClosed.emit(tabIndex)
 
     def openSceneIds(self, asString=False):
         ids = []
@@ -501,6 +488,7 @@ class RadarGraphicsView(QtGui.QGraphicsView):
         self.scene = scene
         self.setScene(self.scene)
         self.setRenderHints(QtGui.QPainter.Antialiasing | QtGui.QPainter.SmoothPixmapTransform)
+        self.setAttribute(QtCore.Qt.WA_DeleteOnClose)
 
     def id(self):
         return self.scene.dbScene.sceneId()
@@ -910,10 +898,13 @@ class RadarListPanel(QtGui.QDockWidget):
         menu.exec_()
 
     def setGraphicsScene(self, scene):
-        self._scene = scene
-        self.form.itemTableView.setModel(self._scene.proxyModel)
-        for col in self._scene.sourceModel.hiddenColumns:
-            self.form.itemTableView.setColumnHidden(col, True)
+        if scene:
+            self._scene = scene
+            self.form.itemTableView.setModel(self._scene.proxyModel)
+            for col in self._scene.sourceModel.hiddenColumns:
+                self.form.itemTableView.setColumnHidden(col, True)
+        else:
+            self.form.itemTableView.setModel(None)
 
 
     def getGraphicsScene(self):
@@ -1027,7 +1018,7 @@ class RadarAttributeEditor(QtGui.QDockWidget):
 
     def setRadarItem(self, radarItem):
 
-        if all([radarItem]):
+        if all([radarItem, self.scene]):
             self.radarItem = radarItem
             self.rowIndexes = self.scene.sourceModel.rowModelIndexFromId(self.radarItem.id())
 
@@ -1113,6 +1104,8 @@ class MainWindow(QtGui.QMainWindow):
         self.attributeEditor = RadarAttributeEditor(self)
         self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self.attributeEditor)
 
+        self.centralTab.tabClosed.connect(self.sceneTabClosed)
+
         self.setMinimumSize(800, 1024)
 
     def update_progress(self, n, nrows):
@@ -1138,11 +1131,6 @@ class MainWindow(QtGui.QMainWindow):
 
 
     def createActions(self):
-
-        self.saveSceneAct = QtGui.QAction(self.tr("S&ave"), self)
-        self.saveSceneAct.setShortcut(self.tr("Ctrl+S"))
-        self.saveSceneAct.setStatusTip(self.tr("Save Radar Scene"))
-        self.saveSceneAct.triggered.connect(self.saveScene)
 
         self.openSceneAct = QtGui.QAction(self.tr("O&pen"), self)
         self.openSceneAct.setShortcut(self.tr("Ctrl+O"))
@@ -1195,8 +1183,10 @@ class MainWindow(QtGui.QMainWindow):
         else:
             pass
 
-    def saveScene(self):
-        log.debug("Save")
+    def sceneTabClosed(self):
+        self.attributeEditor.setGraphicsScene(None)
+        self.itemListPanel.setGraphicsScene(None)
+        self.connectModel(self.centralTab.tabContainer.currentIndex())
 
     def openScene(self, sceneRecord):
 
