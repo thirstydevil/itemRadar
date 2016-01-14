@@ -8,6 +8,11 @@ import math
 import datetime
 import getpass
 
+from bson import json_util
+import json
+
+
+
 _g_client = None
 _g_DB = "itemRadar"
 _g_localMode = False
@@ -79,6 +84,13 @@ class MongoSceneHandle(QtCore.QObject):
         collection = self.db.get_collection("items")
         collection.find_one_and_update({"_id": id}, {"$set": data})
         return self.findItem(id)
+
+    def exportAs(self, path):
+        data = {"scene": self._sceneRecord,
+                "items": self.items()}
+        import json
+        with open(path, 'w') as out:
+            json.dump(data, out, indent=4, sort_keys=True, default=json_util.default)
 
     def delete(self):
         if self.isValidScene():

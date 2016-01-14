@@ -41,6 +41,16 @@ class RadarGraphicsItem(QtGui.QGraphicsItem):
         self.setAcceptHoverEvents(True)
         self._cachePos = None
         self.record = {}
+        self._playing = False
+        self.tl = QtCore.QTimeLine(500)
+        self.itemAnimation = QtGui.QGraphicsItemAnimation()
+        self.itemAnimation.setItem(self)
+        self.itemAnimation.setTimeLine(self.tl)
+        self.itemAnimation.setScaleAt(1, 1.3, 1.1)
+
+    def play(self):
+        if not self.tl.currentValue() > 0:
+            self.tl.start()
 
     @property
     def dotRect(self):
@@ -196,6 +206,7 @@ class RadarGraphicsScene(QtGui.QGraphicsScene):
             self.addItem(graphicsItem)
             self.sourceModel.updateGraphicsItemColour.connect(graphicsItem.updateColour)
 
+
     def addItem(self, item):
         idx = getattr(item, 'id', '')
         if idx:
@@ -313,6 +324,12 @@ class RadarGraphicsScene(QtGui.QGraphicsScene):
         self.animclip.setPosAt(0, QtCore.QPointF(0, 0))
         self.animclip.setRotationAt(1, 360)
         self.timeline.start()
+        self.timeline.valueChanged.connect(self.itemAnimUpdate)
+
+    def itemAnimUpdate(self, f):
+        items = [i for i in self.collidingItems(self.radarAnimItem) if i in self._itemDict.values()]
+        for item in items:
+            item.play()
 
     def showHideAnimatedRadar(self, state):
         item = getattr(self, "radarAnimItem", None)
@@ -489,9 +506,6 @@ class RadarGraphicsView(QtGui.QGraphicsView):
         self.setScene(self.scene)
         self.setRenderHints(QtGui.QPainter.Antialiasing | QtGui.QPainter.SmoothPixmapTransform)
         self.setAttribute(QtCore.Qt.WA_DeleteOnClose)
-
-    def id(self):
-        return self.scene.dbScene.sceneId()
 
 class SceneFilterProxyMode(QtGui.QSortFilterProxyModel):
     def __init__(self, parent=None):
@@ -1058,6 +1072,7 @@ class RadarAttributeEditor(QtGui.QDockWidget):
             if self.radarItem:
                 if sender is self.form.name_lineEdit:
                     model.setData(self.rowIndexes["name"], self.form.name_lineEdit.text(), role)
+                    self.radarItem.record['name'] = self.form.name_lineEdit.text()
                 elif sender is self.form.description_plainTextEdit:
                     model.setData(self.rowIndexes["description"], self.form.description_plainTextEdit.toPlainText(), role)
                 elif sender is self.form.link_lineEdit:
@@ -1132,11 +1147,6 @@ class MainWindow(QtGui.QMainWindow):
 
     def createActions(self):
 
-        self.openSceneAct = QtGui.QAction(self.tr("O&pen"), self)
-        self.openSceneAct.setShortcut(self.tr("Ctrl+O"))
-        self.openSceneAct.setStatusTip(self.tr("Open Radar Scene"))
-        self.openSceneAct.triggered.connect(self.openScene)
-
         self.exitAct = QtGui.QAction(self.tr("E&xit"), self)
         self.exitAct.setShortcut(self.tr("Ctrl+Q"))
         self.exitAct.setStatusTip(self.tr("Exit the application"))
@@ -1145,6 +1155,11 @@ class MainWindow(QtGui.QMainWindow):
         self.aboutAct = QtGui.QAction(self.tr("&About"), self)
         self.aboutAct.setStatusTip(self.tr("Show the application's About box"))
         self.aboutAct.triggered.connect(self.about)
+
+        self.exportAct = QtGui.QAction(self.tr("E&xport Scene"), self)
+        self.exportAct.setShortcut(self.tr("Ctrl+S"))
+        self.exportAct.setStatusTip(self.tr("Export the current scene to a json file"))
+        self.exportAct.triggered.connect(self.exportScene)
 
         #  TOOLBAR ACTIONS
         self.tb_exitAction = QtGui.QAction(QtGui.QIcon('exit24.png'), 'Exit', self)
@@ -1161,6 +1176,7 @@ class MainWindow(QtGui.QMainWindow):
 
         self.fileMenu.addSeparator()
         self.fileMenu.addAction(self.exitAct)
+        self.fileMenu.addAction(self.exportAct)
 
         self.helpMenu = self.menuBar().addMenu(self.tr("&Help"))
         self.helpMenu.addAction(self.aboutAct)
@@ -1187,6 +1203,18 @@ class MainWindow(QtGui.QMainWindow):
         self.attributeEditor.setGraphicsScene(None)
         self.itemListPanel.setGraphicsScene(None)
         self.connectModel(self.centralTab.tabContainer.currentIndex())
+
+    def exportScene(self):
+        graphicsViewIndex = self.centralTab.tabContainer.currentIndex()
+        if graphicsViewIndex != -1:
+            view = self.centralTab.tabContainer.widget(graphicsViewIndex)
+            options = QtGui.QFileDialog.Options()
+            fileName, _ = QtGui.QFileDialog.getSaveFileName(self,
+                "export scene",
+                "",
+                "All Files (*);;Scene Files (*.json)")
+            if fileName:
+                view.scene.mongoSceneHandle.exportAs(fileName)
 
     def openScene(self, sceneRecord):
 
