@@ -3,14 +3,11 @@ __author__ = "dmoulder"
 from PySide import QtCore, QtGui
 from PySide.QtCore import Signal
 from pymongo import MongoClient
-from pprint import pformat, pprint
 import math
 import datetime
 import getpass
 
 from bson import json_util
-import json
-
 
 
 _g_client = None
@@ -36,11 +33,15 @@ def init():
     Makes the default collections we need in the db
     :return: None
     """
-    db = getItemRadarDb()
-    if "scenes" not in db.collection_names():
-        db.create_collection("scenes")
-    if "items" not in db.collection_names():
-        db.create_collection("items")
+    try:
+
+        db = getItemRadarDb()
+        if "scenes" not in db.collection_names():
+            db.create_collection("scenes")
+        if "items" not in db.collection_names():
+            db.create_collection("items")
+    except Exception as e:
+        return None
 
 
 init()
@@ -78,12 +79,12 @@ class MongoSceneHandle(QtCore.QObject):
         self.db = getItemRadarDb()
 
     def __repr__(self):
-        return "radarMongoDBScene(id:{0}, name:{1})".format(self.sceneId(), getattr())
+        return "radarMongoDBScene(id:{0}, name:{1})".format(self.sceneId(), self.sceneName())
 
-    def __updateItem__(self, id, data):
+    def __updateItem__(self, idx, data):
         collection = self.db.get_collection("items")
-        collection.find_one_and_update({"_id": id}, {"$set": data})
-        return self.findItem(id)
+        collection.find_one_and_update({"_id": idx}, {"$set": data})
+        return self.findItem(idx)
 
     def exportAs(self, path):
         data = {"scene": self._sceneRecord,
@@ -96,26 +97,30 @@ class MongoSceneHandle(QtCore.QObject):
         if self.isValidScene():
             for i in self.items():
                 self.db.items.remove(i)
-            self.db.scenes.remove(self._sceneRecord)
+            print self._sceneRecord
+            self.db.scenes.delete_one({"_id": self._sceneRecord["_id"]})
             self._sceneRecord = None
 
     @classmethod
-    def findSceneFromId(cls, id):
+    def findSceneFromId(cls, idx):
         db = getItemRadarDb()
-        return db.scenes.find_one({"_id": id})
+        return db.scenes.find_one({"_id": idx})
 
     @classmethod
     def getScenes(cls):
         db = getItemRadarDb()
-        cursor = db.scenes.find({})
-        return [cls(d) for d in cursor]
+        if db:
+            cursor = db.scenes.find({})
+            return [cls(d) for d in cursor]
+        return []
 
     @classmethod
     def createNewScene(cls):
         db = getItemRadarDb()
-        result = db.scenes.insert_one(cls.scene_template.copy())
-        record = cls.findSceneFromId(result.inserted_id)
-        return cls(record)
+        if db:
+            result = db.scenes.insert_one(cls.scene_template.copy())
+            record = cls.findSceneFromId(result.inserted_id)
+            return cls(record)
 
     def setSceneRecord(self, sceneRecord):
         self._sceneRecord = sceneRecord
@@ -284,6 +289,7 @@ class RadarScenesTableModel(QtCore.QAbstractTableModel):
     def addNewRadar(self):
         scene = MongoSceneHandle.createNewScene()
         self.datatable.append(scene._sceneRecord)
+        self.reset()
         self.layoutChanged.emit()
 
     def radarFromRow(self, row):
@@ -295,6 +301,7 @@ class RadarScenesTableModel(QtCore.QAbstractTableModel):
                 return r
 
     def sync(self):
+        self.reset()
         self.datatable = [r._sceneRecord for r in MongoSceneHandle.getScenes()]
         self.layoutChanged.emit()
 
@@ -390,8 +397,8 @@ class RadarItemsTableModel(QtCore.QAbstractTableModel):
     def rawDataFromRow(self, row):
         return self.datatable[row]
 
-    def rawDataFromId(self, id):
-        row = self.rowFromId(id)
+    def rawDataFromId(self, idx):
+        row = self.rowFromId(idx)
         return self.rawDataFromRow(row)
 
     def addNewRadarItem(self):
@@ -436,9 +443,9 @@ class RadarItemsTableModel(QtCore.QAbstractTableModel):
                 x, y = data
                 if x < 0 and y < 0:
                     return 'P1'
-                if x > 0 and y < 0:
+                if x > 0 > y:
                     return 'P2'
-                if x < 0 and y > 0:
+                if x < 0 < y:
                     return 'P3'
                 if x > 0 and y > 0:
                     return 'P4'
@@ -484,7 +491,10 @@ class RadarItemsTableModel(QtCore.QAbstractTableModel):
 
 
 if __name__ == "__main__":
-    scene = MongoSceneHandle.createNewScene()
-    scene.setOwnership('mrutter')
-    scene.renameScene('rutters')
+    getClient()
+    db = getItemRadarDb()
+    print db
+    # scene = MongoSceneHandle.createNewScene()
+    # scene.setOwnership('mrutter')
+    # scene.renameScene('rutters')
 

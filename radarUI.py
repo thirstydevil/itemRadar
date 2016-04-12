@@ -10,6 +10,7 @@ import radarAttributeEditorForm
 import radarListForm
 import radarSelectSceneForm
 from radarDBHandle import MongoSceneHandle, RadarScenesTableModel, RadarItemsTableModel, getpass
+import random
 
 log.basicConfig(level=log.INFO)
 
@@ -42,15 +43,21 @@ class RadarGraphicsItem(QtGui.QGraphicsItem):
         self._cachePos = None
         self.record = {}
         self._playing = False
-        self.tl = QtCore.QTimeLine(500)
+        self.tl = QtCore.QTimeLine(50)
+        self.tl.setLoopCount(200)
         self.itemAnimation = QtGui.QGraphicsItemAnimation()
         self.itemAnimation.setItem(self)
         self.itemAnimation.setTimeLine(self.tl)
-        self.itemAnimation.setScaleAt(1, 1.3, 1.1)
+        self.itemAnimation.setScaleAt(1, 1.5, 1.5)
 
     def play(self):
         if not self.tl.currentValue() > 0:
             self.tl.start()
+
+    def stop(self):
+        if self.tl.currentValue() > 0:
+            self.tl.stop()
+            self.tl.setCurrentTime(0)
 
     @property
     def dotRect(self):
@@ -165,7 +172,7 @@ class RadarGraphicsScene(QtGui.QGraphicsScene):
         self.mongoSceneHandle = None
         self.radarItemTableModel = None
 
-        self.backgroundBrush = QtGui.QBrush(QtGui.QColor.fromRgb(34, 17, 17))
+        self.backgroundBrush = QtGui.QBrush(QtGui.QColor.fromRgb(34, 17, 17, 50))
         self.backgroundPenLines = QtGui.QPen(QtGui.QColor.fromRgb(0153, 38, 0, 25), 2)
         self.backgroundPenRings = QtGui.QPen(QtGui.QColor.fromRgb(153, 38, 0, 75), 2)
         self.backgroundPenLinesBold = QtGui.QPen(QtGui.QColor.fromRgb(153, 38, 0, 80), 2)
@@ -309,7 +316,7 @@ class RadarGraphicsScene(QtGui.QGraphicsScene):
 
     def setupAnimatedRadar(self):
         pen = QtGui.QPen(QtGui.QColor.fromRgb(153, 38, 0, 25), 2)
-        brush = QtGui.QBrush(QtGui.QColor.fromRgb(0, 150, 150, 10))
+        brush = QtGui.QBrush(QtGui.QColor.fromRgb(0, 150, 150, 25))
         rad = self.maxRadarDiameter() / 2
         self.radarAnimItem = self.addEllipse(0-rad, 0-rad, rad*2, rad*2, pen, brush)
         self.radarAnimItem.setPos(0,0)
@@ -327,9 +334,15 @@ class RadarGraphicsScene(QtGui.QGraphicsScene):
         self.timeline.valueChanged.connect(self.itemAnimUpdate)
 
     def itemAnimUpdate(self, f):
-        items = [i for i in self.collidingItems(self.radarAnimItem) if i in self._itemDict.values()]
-        for item in items:
-            item.play()
+        collidingItems = [i for i in self.collidingItems(self.radarAnimItem) if i in self._itemDict.values()]
+        if collidingItems:
+            i = random.choice(collidingItems)
+            i.play()
+
+        nonCollidingItems = [i for i in self._itemDict.values() if i not in collidingItems]
+        for i in nonCollidingItems:
+            i.stop()
+
 
     def showHideAnimatedRadar(self, state):
         item = getattr(self, "radarAnimItem", None)
@@ -408,6 +421,7 @@ class ExtendedQLabel(QtGui.QLabel):
     def mouseReleaseEvent(self, ev):
         self.clicked.emit()
 
+
 class SimpleColourPicker(QtGui.QWidget):
 
     setColor = Signal(QtGui.QColor)
@@ -416,21 +430,21 @@ class SimpleColourPicker(QtGui.QWidget):
         super(SimpleColourPicker, self).__init__(parent)
         self.setLayout(QtGui.QHBoxLayout())
         self.colours = [
-            QtGui.QColor(QtCore.Qt.red),
-            QtGui.QColor(QtCore.Qt.darkRed),
-            QtGui.QColor(QtCore.Qt.green),
-            QtGui.QColor(QtCore.Qt.darkGreen),
-            QtGui.QColor(QtCore.Qt.blue),
-            QtGui.QColor(QtCore.Qt.darkBlue),
-            QtGui.QColor(QtCore.Qt.cyan),
-            QtGui.QColor(QtCore.Qt.darkCyan),
-            QtGui.QColor(QtCore.Qt.magenta),
-            QtGui.QColor(QtCore.Qt.darkMagenta),
-            QtGui.QColor(QtCore.Qt.yellow),
-            QtGui.QColor(QtCore.Qt.darkYellow),
-            QtGui.QColor(QtCore.Qt.gray),
-            QtGui.QColor(QtCore.Qt.lightGray),
-            QtGui.QColor(QtCore.Qt.darkGray),
+            QtGui.QColor(202, 227, 116),
+            QtGui.QColor(183, 136, 174),
+            QtGui.QColor(128, 45, 112),
+            QtGui.QColor(203, 172, 197),
+            QtGui.QColor(231, 206, 146),
+            QtGui.QColor(206, 176, 104),
+            QtGui.QColor(255, 236, 190),
+            QtGui.QColor(107, 116, 158),
+            QtGui.QColor(135, 142, 175),
+            QtGui.QColor(79, 90, 141),
+            QtGui.QColor(53, 65, 122),
+            QtGui.QColor(203, 221, 139),
+            QtGui.QColor(145, 170, 60),
+            QtGui.QColor(230, 244, 181),
+            QtGui.QColor(175, 197, 99),
         ]
         self.widgets = []
         for col in self.colours:
@@ -506,6 +520,7 @@ class RadarGraphicsView(QtGui.QGraphicsView):
         self.setScene(self.scene)
         self.setRenderHints(QtGui.QPainter.Antialiasing | QtGui.QPainter.SmoothPixmapTransform)
         self.setAttribute(QtCore.Qt.WA_DeleteOnClose)
+
 
 class SceneFilterProxyMode(QtGui.QSortFilterProxyModel):
     def __init__(self, parent=None):
@@ -1093,7 +1108,7 @@ class MainWindow(QtGui.QMainWindow):
         super(MainWindow, self).__init__(parent)
         self.setWindowTitle("Item Radar")
         self.setBaseSize(800, 1024)
-        self.setWindowIcon(QtGui.QIcon(g_IMAGES_PATH + "/windowIcon.png"))
+        self.setWindowIcon(QtGui.QIcon(g_IMAGES_PATH + "/radar_window_icon.png"))
         self.pb = QtGui.QProgressBar(self.statusBar())
         self.statusBar().addPermanentWidget(self.pb)
 
